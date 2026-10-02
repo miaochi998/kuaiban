@@ -87,12 +87,14 @@ pnpm typecheck
 | 业务逻辑设计 | ✅ v0.2 定稿候选 |
 | 技术选型 | ✅ v0.1 |
 | 挂件原型（技术风险验证） | ✅ **macOS + Windows 双端真机实测通过** |
-| **大脑 `@kuaiban/core`** | ✅ **业务规则全部实现，148 个单元测试通过** |
-| 接本地数据库（SQLite） | 🚧 进行中 |
+| **大脑 `@kuaiban/core`** | ✅ **业务规则全部实现** |
+| **本地持久化（SQLite）+ 界面接真实数据** | ✅ **挂件已能天天用** |
 | 到点提醒（外壳侧定时器 + 闪动 + 声音 + 气泡） | ⬜ |
 | 服务端 + 管理后台 | ⬜ |
 | 界面草图 / 完整功能 | ⬜ |
 | 上线（先自用，再逐步推广） | ⬜ |
+
+> 当前测试 **220 个**（大脑 168 + 桌面 52），`pnpm test` 全过。
 
 ### 大脑 `@kuaiban/core` 已实现的规则
 
@@ -158,4 +160,18 @@ pnpm typecheck
 | 打字时 | **绝不收起** | 打字时手会离开鼠标、鼠标容易滑出窗口；不挡这一条，1.5 秒后面板就被收走、草稿白打 |
 | 兜底收起 | Rust 侧 3 秒 | 明显长于前端的 1.5 秒，只在前端收不到 `mouseleave` 时救场，正常路径绝不抢跑 |
 | 托盘唤起 | 等价于**钉住** | 从托盘唤起时鼠标没进过窗口，收不到 `mouseleave`；不钉住的话面板会一直开着且用户不知道为什么 |
+
+### 数据放在哪
+
+单文件 SQLite，换电脑直接拷走就带走了全部数据：
+
+| 系统 | 路径 |
+|---|---|
+| macOS | `~/Library/Application Support/com.kuaiban.app/kuaiban.db` |
+| Windows | `%APPDATA%\com.kuaiban.app\kuaiban.db` |
+
+> ⚠️ **SQL 权限有个坑**：`sql:default` 只含 `allow-close/load/select`，**不含 `allow-execute`**。
+> 漏掉它，读能跑、写会被运行时静默拒绝（用户以为记下了其实没存）。
+> 所以 capabilities 里显式写了 `sql:allow-load` + `sql:allow-select` + `sql:allow-execute`。
+> `apps/desktop/test/backend-contract.test.ts` 会拦住这个回退。
 
