@@ -38,9 +38,18 @@ function togglePin() {
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === "Escape" && !pinned.value) {
-    clearLeaveTimer();
-    void invoke("set_expanded", { expanded: false });
+  if (e.key === "Escape") {
+    const el = draftEl.value;
+    if (el && el === document.activeElement) {
+      // 先交还键盘焦点，再收起（收起后就不该再占着别人的键盘输入了）
+      el.blur();
+      releaseKeyboard();
+      return;
+    }
+    if (!pinned.value) {
+      clearLeaveTimer();
+      void invoke("set_expanded", { expanded: false });
+    }
   }
 }
 
@@ -57,6 +66,11 @@ onMounted(async () => {
   unlisten = await listen<WidgetStatus>("widget:state", (event) => {
     expanded.value = event.payload.expanded;
     pinned.value = event.payload.pinned;
+    // 面板收起 = 不再需要打字，立刻交还键盘焦点（后端也会再兜一次）
+    if (!event.payload.expanded) {
+      draftEl.value?.blur();
+      releaseKeyboard();
+    }
   });
 
   document.documentElement.addEventListener("mouseleave", scheduleCollapse);
@@ -97,6 +111,27 @@ const doneItems = [
 
 const showDone = ref(false);
 const draft = ref("");
+const draftEl = ref<HTMLInputElement | null>(null);
+
+// ─────────────────────────────────────────────────────────────
+// Windows「不抢焦点」与「输入框能打字」如何共存（外壳行为，非业务逻辑）
+//
+// 挂件平时带 WS_EX_NOACTIVATE：点面板任何地方都不会夺走用户当前窗口的焦点，
+// 代价是这个窗口永远拿不到键盘焦点 —— 输入框打不了字。
+// 折中：只有用户明确点了输入框，才向后端申请「临时可激活」，
+// 拿到键盘焦点后立刻聚焦输入框；失焦 / 面板收起 / 按 Esc 立刻交还。
+// ─────────────────────────────────────────────────────────────
+async function grabKeyboard() {
+  try {
+    await invoke("set_activatable", { activatable: true });
+  } catch {
+    /* 非 Tauri 环境（纯浏览器调试）忽略 */
+  }
+}
+
+function releaseKeyboard() {
+  void invoke("set_activatable", { activatable: false }).catch(() => {});
+}
 
 const remaining = () => today.value.filter((t) => !t.done).length + overdue.length;
 
@@ -181,10 +216,13 @@ function addTodo() {
 
       <footer class="foot">
         <input
+          ref="draftEl"
           v-model="draft"
           class="add"
           type="text"
           placeholder="＋ 添加今天的待办，回车即存…"
+          @mousedown="grabKeyboard"
+          @blur="releaseKeyboard"
           @keydown.enter="addTodo"
         />
         <div class="hint">

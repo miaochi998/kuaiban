@@ -27,15 +27,26 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # ─────────────────────────────────────────────────────────────
-# Windows 专属：实现「不抢焦点」（WS_EX_NOACTIVATE）
+# Windows 专属：实现「不抢焦点」（WS_EX_NOACTIVATE）+「按需可输入」
 # 这是整个项目唯一需要写平台代码的地方，且被隔离在本层，
 # 绝不允许泄漏到 packages/core（大脑）。
+#
+# windows 版本（0.62）刻意与 tauri 2.12 自己依赖的版本对齐（tauri 用 0.62）。
+# 背景：`window.hwnd()` 返回的是 **tauri 那份 windows crate** 的 HWND，
+# 而本 crate 原来声明的是 0.58，靠 `handle.0 as _` 把裸指针硬转过去。
+# 实测（Windows 11 26300 + rustc 1.91）这段能编过，但它把"两个版本里 HWND 都是
+# `pub *mut c_void`"当成了隐含契约，而且会同时编译两份 windows crate。
+# 现在：HWND 一律通过 raw-window-handle 取（见 lib.rs::hwnd_of），与 crate 版本无关；
+# windows 版本对齐到 0.62，只保留一份。
 # ─────────────────────────────────────────────────────────────
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
 ] }
+# 只交换裸指针，跨 windows crate 版本稳定，用来从 Tauri 窗口拿原生 HWND
+raw-window-handle = "0.6"
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

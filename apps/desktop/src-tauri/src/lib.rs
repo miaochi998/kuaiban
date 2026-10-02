@@ -15,7 +15,7 @@
 //!   * 不抢焦点：Windows 上必须设 WS_EX_NOACTIVATE，否则点一下挂件会把
 //!     用户正在用的窗口夺走焦点 —— 那这个软件就没法用了。
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::time::Duration;
 
 use tauri::{
@@ -46,6 +46,13 @@ pub struct WidgetState {
     expanded: AtomicBool,
     /// 是否被"钉住"（钉住后鼠标移开也不收起）
     pinned: AtomicBool,
+    /// Windows：当前是否为了让输入框能打字而临时允许窗口被激活。
+    /// 平时必须为 false（挂件点击不抢焦点）；只有用户明确点输入框时才短暂变 true。
+    /// 其它平台无意义，恒为 false。
+    activatable: AtomicBool,
+    /// Windows：临时可激活之前的前台窗口句柄，用于交还焦点（0 = 无）
+    #[cfg_attr(not(windows), allow(dead_code))]
+    prev_foreground: AtomicIsize,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -114,6 +121,12 @@ fn set_expanded_inner(app: &AppHandle, expanded: bool) {
         let _ = window.set_ignore_cursor_events(!expanded);
     }
 
+    if !expanded {
+        // 面板收起 = 用户不再需要打字：立刻把"不抢焦点"恢复回去。
+        // 这是"绝不能卡在可激活状态"的第一道保险（另外还有输入框 blur 与轮询看门狗）。
+        set_activatable_inner(app, false);
+    }
+
     let _ = app.emit("widget:state", state.status());
 }
 
@@ -145,6 +158,20 @@ fn get_status(app: AppHandle) -> WidgetStatus {
     app.state::<WidgetState>().status()
 }
 
+/// Windows 专用：临时允许 / 禁止本窗口被激活。
+///
+/// 背景：挂件平时带 WS_EX_NOACTIVATE（点击不抢焦点），代价是这个窗口永远拿不到键盘焦点，
+/// 底部"添加待办"输入框根本打不进字。而"随手记一条"是这个软件的核心功能。
+/// 折中办法：只有用户明确点了输入框，才临时摘掉 WS_EX_NOACTIVATE 并主动取得焦点；
+/// 输入框失焦 / 面板收起 / 按 Esc 时立刻恢复。
+///
+/// 前端调用点见 apps/desktop/src/App.vue（输入框 focus / blur、面板收起）。
+/// 非 Windows 平台是空操作（macOS 用 ActivationPolicy::Accessory，不需要动态切换）。
+#[tauri::command]
+fn set_activatable(app: AppHandle, activatable: bool) {
+    set_activatable_inner(&app, activatable);
+}
+
 // ─────────────────────────────────────────────────────────────
 // 悬停检测（轮询鼠标坐标）
 //
@@ -157,6 +184,15 @@ fn spawn_hover_watcher(app: AppHandle) {
         std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
 
         let state = app.state::<WidgetState>();
+
+        // 看门狗（Windows）：只要当前不需要打字，就确保 WS_EX_NOACTIVATE 在位。
+        // 哪怕前面任何一条恢复路径失效，这里最多 80ms 就会纠正回来。
+        if !state.activatable.load(Ordering::Relaxed) {
+            if let Some(window) = app.get_webview_window(WIDGET_LABEL) {
+                ensure_non_activating(&window);
+            }
+        }
+
         if state.pinned.load(Ordering::Relaxed) || state.expanded.load(Ordering::Relaxed) {
             continue;
         }
@@ -196,32 +232,87 @@ fn spawn_hover_watcher(app: AppHandle) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Windows 专属：不抢焦点
+// Windows 专属：不抢焦点 + 按需临时可输入
 //
-// 没有这一句，用户点挂件时当前工作窗口会失去焦点（输入框光标消失、
+// 没有 WS_EX_NOACTIVATE，用户点挂件时当前工作窗口会失去焦点（输入框光标消失、
 // 全屏游戏/演示被打断）——这是"不影响其他窗口工作"这条需求的技术前提。
+//
+// 但 WS_EX_NOACTIVATE 的代价是：该窗口永远拿不到键盘焦点，输入框打不了字。
+// 所以这里做「动态切换」：
+//   平时              → 带 WS_EX_NOACTIVATE，点面板任何地方都不抢焦点
+//   用户点输入框      → 摘掉 NOACTIVATE + SetForegroundWindow + SetFocus，可以打字
+//   失焦/收起/Esc     → 立刻装回 NOACTIVATE，并把焦点还给原来的窗口
+// 三道保险防止"卡在可激活状态"：输入框 blur、面板收起、80ms 轮询看门狗。
 // ─────────────────────────────────────────────────────────────
 
 #[cfg(windows)]
-fn make_non_activating(window: &WebviewWindow) {
+fn hwnd_of(window: &WebviewWindow) -> Option<windows::Win32::Foundation::HWND> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows::Win32::Foundation::HWND;
+
+    // 走 raw-window-handle 而不是 `window.hwnd()`：
+    // 后者返回的 HWND 属于 tauri 依赖的 windows crate 版本（tauri 2.12 用 0.62），
+    // 与本 crate 自己声明的版本不是同一个类型，得靠 `handle.0 as _` 硬转裸指针才编得过
+    // （实测能编过，但把"两个版本的 HWND 内部都是裸指针"当成了隐含契约）。
+    // raw-window-handle 只交换一个裸指针，是跨版本稳定的官方接口。
+    let handle = window.window_handle().ok()?;
+    match handle.as_raw() {
+        RawWindowHandle::Win32(h) => Some(HWND(h.hwnd.get() as *mut _)),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
+fn get_ex_style(hwnd: windows::Win32::Foundation::HWND) -> isize {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, GWL_EXSTYLE};
+    unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) }
+}
+
+#[cfg(windows)]
+fn set_ex_style(hwnd: windows::Win32::Foundation::HWND, style: isize) {
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWL_EXSTYLE};
+    unsafe {
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style);
+    }
+}
+
+/// 打开 / 关闭「不抢焦点」。true = 不抢焦点（默认状态）。
+/// 同时确保「不占任务栏」：补上 WS_EX_TOOLWINDOW，并摘掉 WS_EX_APPWINDOW。
+///
+/// 为什么还要动 APPWINDOW：tao（Tauri 的窗口层）创建窗口时按 WindowFlags 会带上
+/// WS_EX_APPWINDOW，`skipTaskbar` 只是事后调 ITaskbarList::DeleteTab 把按钮摘掉。
+/// 位还在，等于"两种意图打架"，explorer 重启等场景下按钮有可能被重新画出来。
+/// 这里直接把 APPWINDOW 摘掉、TOOLWINDOW 补上，是 Windows 上"托盘常驻窗口"的标准做法。
+#[cfg(windows)]
+fn apply_non_activating(hwnd: windows::Win32::Foundation::HWND, non_activating: bool) {
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     };
 
-    let Ok(handle) = window.hwnd() else {
+    let current = get_ex_style(hwnd);
+    // WS_EX_NOACTIVATE：点击不激活窗口（不抢焦点）
+    // WS_EX_TOOLWINDOW：不出现在 Alt+Tab 列表里，也不出现在任务栏
+    let no_activate = WS_EX_NOACTIVATE.0 as isize;
+    let tool_window = WS_EX_TOOLWINDOW.0 as isize;
+    let app_window = WS_EX_APPWINDOW.0 as isize;
+    let base = (current | tool_window) & !app_window;
+    let next = if non_activating {
+        base | no_activate
+    } else {
+        base & !no_activate
+    };
+    if next != current {
+        set_ex_style(hwnd, next);
+    }
+}
+
+#[cfg(windows)]
+fn make_non_activating(window: &WebviewWindow) {
+    let Some(hwnd) = hwnd_of(window) else {
         eprintln!("[widget] 拿不到 HWND，无法设置 WS_EX_NOACTIVATE");
         return;
     };
-    let hwnd = HWND(handle.0 as _);
-
-    unsafe {
-        let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        // WS_EX_NOACTIVATE：点击不激活窗口（不抢焦点）
-        // WS_EX_TOOLWINDOW：不出现在 Alt+Tab 列表里
-        let new_style = current | (WS_EX_NOACTIVATE.0 as isize) | (WS_EX_TOOLWINDOW.0 as isize);
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_style);
-    }
+    apply_non_activating(hwnd, true);
     println!("[widget] 已设置 WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW");
 }
 
@@ -229,6 +320,81 @@ fn make_non_activating(window: &WebviewWindow) {
 fn make_non_activating(_window: &WebviewWindow) {
     // macOS 上等价能力通过 ActivationPolicy::Accessory 实现（在 setup 里设置）
 }
+
+#[cfg(windows)]
+fn set_activatable_inner(app: &AppHandle, activatable: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
+
+    let state = app.state::<WidgetState>();
+    // 状态没变就不碰窗口 API（前端 focus/blur 可能重复调用）
+    if state.activatable.swap(activatable, Ordering::Relaxed) == activatable {
+        return;
+    }
+
+    let Some(window) = app.get_webview_window(WIDGET_LABEL) else {
+        return;
+    };
+    let Some(hwnd) = hwnd_of(&window) else {
+        return;
+    };
+
+    unsafe {
+        if activatable {
+            // 记住现在的前台窗口，等会儿把焦点还给它
+            let foreground = GetForegroundWindow();
+            if foreground != hwnd {
+                state
+                    .prev_foreground
+                    .store(foreground.0 as isize, Ordering::Relaxed);
+            }
+            apply_non_activating(hwnd, false);
+            // 用户刚刚点了输入框 —— 本进程持有"最后一次输入事件"，
+            // 所以这里的 SetForegroundWindow 不会被前台锁定规则拒绝。
+            //
+            // ⚠️ 这里**不要**再补 SetFocus(hwnd)。实测（Windows 11 26300 @150%）：
+            // 把焦点强设到顶层窗口会把 WebView2 子窗口的焦点顶掉 → 输入框立刻 blur
+            // → 前端释放激活 → 挂件失活 → 输入框重新 focus → 再次申请激活……
+            // 形成每秒上千次的 focus/blur 死循环，键盘输入全部丢失。
+            // SetForegroundWindow 之后，WebView2 作为活动窗口的焦点子窗口会自然拿到键盘焦点。
+            let ok = SetForegroundWindow(hwnd).as_bool();
+            println!("[widget] 输入框取得键盘焦点（SetForegroundWindow={ok}）");
+        } else {
+            apply_non_activating(hwnd, true);
+            let fg_now = GetForegroundWindow();
+            // 只有当焦点仍在我们身上时才交还：如果用户已经自己点到别的窗口，
+            // 再 SetForegroundWindow 就等于把焦点抢回来 —— 那正是需求禁止的行为。
+            if fg_now == hwnd {
+                let prev = state.prev_foreground.load(Ordering::Relaxed);
+                if prev != 0 && prev != hwnd.0 as isize {
+                    let _ = SetForegroundWindow(windows::Win32::Foundation::HWND(
+                        prev as *mut _,
+                    ));
+                    println!("[widget] 已把焦点还给上一个窗口");
+                }
+            }
+            state.prev_foreground.store(0, Ordering::Relaxed);
+            println!("[widget] 恢复 WS_EX_NOACTIVATE（不抢焦点）");
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn set_activatable_inner(_app: &AppHandle, _activatable: bool) {
+    // 非 Windows 平台不需要动态切换激活策略
+}
+
+/// 看门狗：只要当前不是"需要输入"状态，就确保 WS_EX_NOACTIVATE 在位。
+/// 万一某个前端路径漏掉了恢复调用，最多 80ms 后也会被自动纠正 —— "绝不卡在可激活状态"。
+#[cfg(windows)]
+fn ensure_non_activating(window: &WebviewWindow) {
+    let Some(hwnd) = hwnd_of(window) else {
+        return;
+    };
+    apply_non_activating(hwnd, true);
+}
+
+#[cfg(not(windows))]
+fn ensure_non_activating(_window: &WebviewWindow) {}
 
 // ─────────────────────────────────────────────────────────────
 // 系统托盘
@@ -283,7 +449,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(WidgetState::default())
-        .invoke_handler(tauri::generate_handler![set_expanded, set_pinned, get_status])
+        .invoke_handler(tauri::generate_handler![
+            set_expanded,
+            set_pinned,
+            get_status,
+            set_activatable
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
 
