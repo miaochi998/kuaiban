@@ -1,23 +1,33 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { fromDateKey, monthGrid, normalizeTimeOfDay, todosOnDate, type DateKey, type Todo, type TimeOfDay } from "@kuaiban/core";
+import TodoRow from "./components/TodoRow.vue";
+import { useTodoStore, type PanelTab } from "./store/todos";
+
+// ─────────────────────────────────────────────────────────────
+// 外壳行为：悬停展开 / 移开收起 / 钉住 / 不抢焦点
+// （这部分是平台交互，与业务无关）
+// ─────────────────────────────────────────────────────────────
 
 interface WidgetStatus {
   expanded: boolean;
   pinned: boolean;
 }
 
-/** 鼠标移开后延迟多久收起（与产品文档一致：1.5 秒） */
+/** 鼠标移开后延迟多久收起 */
 const COLLAPSE_DELAY_MS = 1500;
 
 const expanded = ref(false);
 const pinned = ref(false);
-/** 鼠标当前是否在面板范围内 —— 决定"输入结束后"要不要开始收起倒计时 */
+/** 鼠标是否在面板内 —— 决定"输入结束后"要不要开始收起倒计时 */
 const pointerInside = ref(false);
 
 let unlisten: UnlistenFn | null = null;
 let leaveTimer: number | null = null;
+
+const draftEl = ref<HTMLInputElement | null>(null);
 
 function clearLeaveTimer() {
   if (leaveTimer !== null) {
@@ -27,15 +37,9 @@ function clearLeaveTimer() {
 }
 
 /**
- * 开始（或重开）收起倒计时。
- *
- * 三个"不能收"的条件，缺一个都会出问题：
- * 1. `pinned` —— 用户钉住了，本来就不该收
- * 2. `pointerInside` —— 鼠标还在面板上（例如刚输入完，鼠标没动过）
- * 3. 输入框有焦点 —— **用户正在打字**。
- *    打字时手会离开鼠标，鼠标很容易滑出窗口；不挡这一条，
- *    1.5 秒后面板就会被收走、草稿白打。
- *    （Rust 侧还有一道 3 秒兜底，靠 `activatable` 标志做同样的判断。）
+ * 开始（或重开）收起倒计时。三个"不能收"的条件缺一不可：
+ * 钉住了 / 鼠标还在面板上 / **正在打字**。
+ * 打字时手会离开鼠标、鼠标容易滑出窗口，不挡最后一条就会把草稿收没。
  */
 function scheduleCollapse() {
   if (pinned.value) return;
@@ -51,7 +55,6 @@ function scheduleCollapse() {
 /** 输入结束：交还键盘焦点，并重新评估是否该开始收起倒计时 */
 function onInputBlur() {
   releaseKeyboard();
-  // 不重新调一次的话，取消焦点后就没人再触发收起了 —— 面板会反向卡住
   scheduleCollapse();
 }
 
@@ -60,43 +63,60 @@ function togglePin() {
   void invoke("set_pinned", { pinned: pinned.value });
 }
 
+/**
+ * 输入框需要真的能打字，所以在它获得焦点期间向 Rust 申请"临时可激活"。
+ * Windows 上这是让带 WS_EX_NOACTIVATE 的挂件能收到键盘的唯一办法；
+ * 其它平台是空操作，但那个标志仍然要维护 —— Rust 的兜底收起靠它。
+ */
+async function grabKeyboard() {
+  try {
+    await invoke("set_activatable", { activatable: true });
+  } catch {
+    /* 非 Tauri 环境忽略 */
+  }
+}
+
+function releaseKeyboard() {
+  void invoke("set_activatable", { activatable: false }).catch(() => {});
+}
+
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === "Escape") {
-    const el = draftEl.value;
-    if (el && el === document.activeElement) {
-      // 先交还键盘焦点，再收起（收起后就不该再占着别人的键盘输入了）
-      el.blur();
-      releaseKeyboard();
-      clearLeaveTimer();
-      void invoke("set_expanded", { expanded: false });
-      return;
-    }
-    if (!pinned.value) {
-      clearLeaveTimer();
-      void invoke("set_expanded", { expanded: false });
-    }
+  if (e.key !== "Escape") return;
+  const el = draftEl.value;
+  if (el && el === document.activeElement) {
+    el.blur();
+    releaseKeyboard();
+    clearLeaveTimer();
+    void invoke("set_expanded", { expanded: false });
+    return;
+  }
+  if (!pinned.value) {
+    clearLeaveTimer();
+    void invoke("set_expanded", { expanded: false });
   }
 }
 
 onMounted(async () => {
-  // 冷启动时同步一次状态（Rust 是唯一事实来源）
   try {
     const status = await invoke<WidgetStatus>("get_status");
     expanded.value = status.expanded;
     pinned.value = status.pinned;
   } catch {
-    /* 非 Tauri 环境（纯浏览器调试）忽略 */
+    /* 非 Tauri 环境（浏览器调样式）忽略 */
   }
 
-  unlisten = await listen<WidgetStatus>("widget:state", (event) => {
-    expanded.value = event.payload.expanded;
-    pinned.value = event.payload.pinned;
-    // 面板收起 = 不再需要打字，立刻交还键盘焦点（后端也会再兜一次）
-    if (!event.payload.expanded) {
-      draftEl.value?.blur();
-      releaseKeyboard();
-    }
-  });
+  try {
+    unlisten = await listen<WidgetStatus>("widget:state", (event) => {
+      expanded.value = event.payload.expanded;
+      pinned.value = event.payload.pinned;
+      if (!event.payload.expanded) {
+        draftEl.value?.blur();
+        releaseKeyboard();
+      }
+    });
+  } catch {
+    /* 非 Tauri 环境忽略 */
+  }
 
   document.documentElement.addEventListener("mouseleave", () => {
     pointerInside.value = false;
@@ -106,7 +126,6 @@ onMounted(async () => {
     pointerInside.value = true;
     clearLeaveTimer();
   });
-  // 兜底：某些 WebView 只给 mouseout
   document.addEventListener("mouseout", (e) => {
     if (!e.relatedTarget) {
       pointerInside.value = false;
@@ -123,57 +142,122 @@ onUnmounted(() => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// 原型用的假数据（仅用于验证窗口行为与视觉方向，尚未接大脑）
+// 业务界面（数据全部来自大脑 + 存储）
 // ─────────────────────────────────────────────────────────────
-const overdue = [
-  { id: 1, text: "给客户回电话", days: 3, urgent: true },
-  { id: 2, text: "报销单提交", days: 1, urgent: false },
-];
 
-const today = ref([
-  { id: 3, text: "周会", time: "09:30", repeat: "每周", done: false },
-  { id: 4, text: "评审原型稿", time: "14:00", repeat: "", done: false },
-  { id: 5, text: "交周报", time: "17:00", repeat: "", done: false },
-  { id: 6, text: "买咖啡豆", time: "", repeat: "", done: false },
-]);
-
-const doneItems = [
-  { id: 7, text: "回复邮件", time: "08:40" },
-  { id: 8, text: "提交考勤", time: "09:10" },
-  { id: 9, text: "打印合同", time: "10:25" },
-];
+const store = useTodoStore();
+const { view, activeTab, ready, fatalError, remainingCount, visibleTodos, visibleDateKey } = store;
 
 const showDone = ref(false);
 const draft = ref("");
-const draftEl = ref<HTMLInputElement | null>(null);
 
-// ─────────────────────────────────────────────────────────────
-// Windows「不抢焦点」与「输入框能打字」如何共存（外壳行为，非业务逻辑）
-//
-// 挂件平时带 WS_EX_NOACTIVATE：点面板任何地方都不会夺走用户当前窗口的焦点，
-// 代价是这个窗口永远拿不到键盘焦点 —— 输入框打不了字。
-// 折中：只有用户明确点了输入框，才向后端申请「临时可激活」，
-// 拿到键盘焦点后立刻聚焦输入框；失焦 / 面板收起 / 按 Esc 立刻交还。
-// ─────────────────────────────────────────────────────────────
-async function grabKeyboard() {
-  try {
-    await invoke("set_activatable", { activatable: true });
-  } catch {
-    /* 非 Tauri 环境（纯浏览器调试）忽略 */
+const TABS: { key: PanelTab; label: string }[] = [
+  { key: "today", label: "今天" },
+  { key: "tomorrow", label: "明天" },
+  { key: "inbox", label: "随笔" },
+  { key: "calendar", label: "日历" },
+];
+
+const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
+
+const todayLabel = computed(() => {
+  const d = fromDateKey(view.value.businessDate);
+  return `${d.getMonth() + 1}月${d.getDate()}日 周${WEEKDAYS[d.getDay()]}`;
+});
+
+const tomorrowLabel = computed(() => {
+  const d = fromDateKey(view.value.tomorrowDate);
+  return `明天 ${d.getMonth() + 1}月${d.getDate()}日 周${WEEKDAYS[d.getDay()]}`;
+});
+
+const placeholder = computed(() => {
+  switch (activeTab.value) {
+    case "tomorrow":
+      return "＋ 添加明天的事，回车即存…";
+    case "inbox":
+      return "＋ 随手记一条，之后可以排期…";
+    case "calendar":
+      return "";
+    default:
+      return "＋ 添加今天的事，回车即存…";
   }
+});
+
+const emptyHint = computed(() => {
+  switch (activeTab.value) {
+    case "tomorrow":
+      return "明天还没有安排";
+    case "inbox":
+      return "随笔是待办的暂存区\n想到什么先丢进来，之后一键排期";
+    default:
+      return "今天还没有待办\n在下面输入框敲回车就能加一条";
+  }
+});
+
+/**
+ * 极速捕获：支持在输入内容前面直接写时间，例如 `9:30 交周报`。
+ * 这是"随手记"体验的关键 —— 不用点任何地方选时间。
+ */
+function parseDraft(raw: string): { title: string; time: TimeOfDay | null } {
+  const m = /^(\d{1,2}[:：]\d{1,2})\s+(.+)$/.exec(raw.trim());
+  if (m && m[1] && m[2]) {
+    const time = normalizeTimeOfDay(m[1].replace("：", ":"));
+    if (time) return { title: m[2].trim(), time };
+  }
+  return { title: raw.trim(), time: null };
 }
 
-function releaseKeyboard() {
-  void invoke("set_activatable", { activatable: false }).catch(() => {});
-}
+async function submitDraft() {
+  const raw = draft.value.trim();
+  if (!raw) return;
 
-const remaining = () => today.value.filter((t) => !t.done).length + overdue.length;
+  const { title, time } = parseDraft(raw);
+  if (!title) return;
 
-function addTodo() {
-  const text = draft.value.trim();
-  if (!text) return;
-  today.value.push({ id: Date.now(), text, time: "", repeat: "", done: false });
+  const date: DateKey | null =
+    activeTab.value === "tomorrow"
+      ? view.value.tomorrowDate
+      : activeTab.value === "inbox"
+        ? null
+        : view.value.businessDate;
+
+  await store.addTodo({ title, date, time });
   draft.value = "";
+}
+
+async function onToggle(todo: Todo) {
+  await store.toggleDone(todo, visibleDateKey.value);
+}
+
+// ── 日历 ──
+const calCursor = ref(new Date());
+const calYear = computed(() => calCursor.value.getFullYear());
+const calMonth = computed(() => calCursor.value.getMonth() + 1);
+const calCells = computed(() => monthGrid(calYear.value, calMonth.value));
+const calSelected = ref<DateKey | null>(null);
+
+const calSelectedTodos = computed(() =>
+  calSelected.value ? todosOnDate(store.todos.value, calSelected.value) : [],
+);
+
+/** 选中日期（不可空）。用于把 prop 传给 TodoRow 时避免可空类型 */
+const calSelectedKey = computed<DateKey>(
+  () => calSelected.value ?? view.value.businessDate,
+);
+
+function countOn(key: DateKey): number {
+  return todosOnDate(store.todos.value, key).length;
+}
+
+async function toggleOnSelectedDay(todo: Todo) {
+  if (!calSelected.value) return;
+  await store.toggleDone(todo, calSelected.value);
+}
+
+function shiftMonth(delta: number) {
+  const d = calCursor.value;
+  calCursor.value = new Date(d.getFullYear(), d.getMonth() + delta, 1);
+  calSelected.value = null;
 }
 </script>
 
@@ -181,87 +265,166 @@ function addTodo() {
   <div class="widget" :class="{ expanded, pinned }">
     <!-- ── 收起时露在屏幕最右侧的窄条 ────────────────────── -->
     <div class="strip" aria-hidden="true">
-      <span class="strip-badge">{{ remaining() }}</span>
+      <span v-if="remainingCount > 0" class="strip-badge">{{ remainingCount }}</span>
       <span class="strip-grip"></span>
     </div>
 
     <!-- ── 展开的面板 ──────────────────────────────────── -->
     <section class="panel">
       <header class="head">
-        <div class="head-date">10月3日<span>周五</span></div>
-        <div class="head-count">还有 <b>{{ remaining() }}</b> 件</div>
+        <div class="head-date">{{ todayLabel }}</div>
+        <div class="head-count">还有 <b>{{ remainingCount }}</b> 件</div>
         <button
           class="pin"
           :class="{ on: pinned }"
+          type="button"
           :title="pinned ? '取消钉住' : '钉住（鼠标移开也不收起）'"
           @click="togglePin"
-        >
-          📌
-        </button>
+        >📌</button>
       </header>
 
+      <nav class="tabs">
+        <button
+          v-for="t in TABS"
+          :key="t.key"
+          class="tab"
+          :class="{ on: activeTab === t.key }"
+          type="button"
+          @click="activeTab = t.key"
+        >{{ t.label }}</button>
+      </nav>
+
       <div class="scroll">
-        <!-- 昨日未完成 -->
-        <div v-if="overdue.length" class="group overdue">
-          <div class="group-title">⚠ 昨日未完成<span class="n">{{ overdue.length }}</span></div>
-          <div v-for="it in overdue" :key="it.id" class="item">
-            <span class="check"></span>
-            <div class="body">
-              <div class="text">{{ it.text }}</div>
-              <div class="meta">
-                <span class="delay" :class="{ hot: it.urgent }">拖了 {{ it.days }} 天</span>
-              </div>
-            </div>
-          </div>
-        </div>
+        <p v-if="fatalError" class="fatal">
+          读取本地数据失败：{{ fatalError }}
+        </p>
 
-        <!-- 今天 -->
-        <div class="group">
-          <div class="group-title">今天</div>
-          <div v-for="it in today" :key="it.id" class="item" :class="{ done: it.done }">
-            <span class="check" :class="{ done: it.done }" @click="it.done = !it.done"></span>
-            <div class="body">
-              <div class="text">{{ it.text }}</div>
-              <div class="meta">
-                <span v-if="it.time" class="time">{{ it.time }}</span>
-                <span v-if="it.repeat" class="repeat">🔁 {{ it.repeat }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
+        <p v-else-if="!ready" class="loading">正在读取…</p>
 
-        <!-- 已完成 -->
-        <div class="group">
-          <div class="group-title clickable" @click="showDone = !showDone">
-            ✓ 已完成<span class="n muted">{{ doneItems.length }}</span>
-            <span class="caret" :class="{ open: showDone }">›</span>
+        <!-- ── 日历页签 ── -->
+        <template v-else-if="activeTab === 'calendar'">
+          <div class="cal-head">
+            <button class="cal-nav" type="button" @click="shiftMonth(-1)">‹</button>
+            <span class="cal-title">{{ calYear }}年{{ calMonth }}月</span>
+            <button class="cal-nav" type="button" @click="shiftMonth(1)">›</button>
           </div>
-          <template v-if="showDone">
-            <div v-for="it in doneItems" :key="it.id" class="item done">
-              <span class="check done"></span>
-              <div class="body">
-                <div class="text">{{ it.text }}</div>
-                <div class="meta"><span>{{ it.time }}</span></div>
-              </div>
-            </div>
+          <div class="cal-grid">
+            <span v-for="w in ['一','二','三','四','五','六','日']" :key="w" class="cal-wd">{{ w }}</span>
+            <button
+              v-for="cell in calCells"
+              :key="cell"
+              class="cal-cell"
+              :class="{
+                dim: fromDateKey(cell).getMonth() + 1 !== calMonth,
+                today: cell === view.businessDate,
+                picked: cell === calSelected,
+              }"
+              type="button"
+              @click="calSelected = calSelected === cell ? null : cell"
+            >
+              <span class="cal-day">{{ Number(cell.slice(-2)) }}</span>
+              <span v-if="countOn(cell)" class="cal-dot" :data-n="Math.min(countOn(cell), 3)"></span>
+            </button>
+          </div>
+          <template v-if="calSelected">
+            <div class="group-title">{{ calSelected }} · {{ calSelectedTodos.length }} 件</div>
+            <TodoRow
+              v-for="todo in calSelectedTodos"
+              :key="todo.id"
+              :todo="todo"
+              :date-key="calSelectedKey"
+              @toggle="toggleOnSelectedDay(todo)"
+              @remove="store.removeTodo(todo)"
+              @carry-over="store.moveTodoTo(todo, view.businessDate)"
+            />
+            <p v-if="calSelectedTodos.length === 0" class="empty small">这一天没有安排</p>
           </template>
-        </div>
+        </template>
+
+        <!-- ── 列表页签 ── -->
+        <template v-else>
+          <!-- 昨日未完成（本软件的灵魂） -->
+          <div v-if="activeTab === 'today' && view.overdue.length" class="group overdue">
+            <div class="group-title">
+              ⚠ 昨日未完成<span class="n">{{ view.overdue.length }}</span>
+              <button
+                v-if="view.overdue.length > 1"
+                class="carry-all"
+                type="button"
+                @click="store.carryOverAll()"
+              >全部搬今天</button>
+            </div>
+            <TodoRow
+              v-for="o in view.overdue"
+              :key="o.todo.id"
+              :todo="o.todo"
+              :date-key="view.businessDate"
+              :overdue-days="o.overdueDays"
+              :needs-attention="o.needsAttention"
+              @toggle="store.toggleDone(o.todo, view.businessDate)"
+              @remove="store.removeTodo(o.todo)"
+              @carry-over="store.moveTodoTo(o.todo, view.businessDate)"
+            />
+            <p v-if="view.needsAttention.length" class="nudge">
+              拖了好几天了，要不要改个时间、拆小一点，或者放弃？
+            </p>
+          </div>
+
+          <!-- 当前页签的列表 -->
+          <div v-if="visibleTodos.length" class="group">
+            <div v-if="activeTab === 'tomorrow'" class="group-title">{{ tomorrowLabel }}</div>
+            <div v-else-if="activeTab === 'inbox'" class="group-title">随笔 · 未排期</div>
+            <TodoRow
+              v-for="todo in visibleTodos"
+              :key="todo.id"
+              :todo="todo"
+              :date-key="visibleDateKey"
+              @toggle="onToggle(todo)"
+              @remove="store.removeTodo(todo)"
+              @carry-over="store.moveTodoTo(todo, view.businessDate)"
+            />
+          </div>
+
+          <p v-else-if="activeTab !== 'today' || !view.overdue.length" class="empty">
+            {{ emptyHint }}
+          </p>
+
+          <!-- 已完成（只在今天页签） -->
+          <div v-if="activeTab === 'today'" class="group">
+            <button
+              class="group-title clickable"
+              type="button"
+              @click="showDone = !showDone"
+            >
+              ✓ 已完成<span class="n muted">{{ view.doneToday.length }}</span>
+              <span class="caret" :class="{ open: showDone }">›</span>
+            </button>
+            <template v-if="showDone">
+              <TodoRow
+                v-for="todo in view.doneToday"
+                :key="todo.id"
+                :todo="todo"
+                :date-key="view.businessDate"
+                @toggle="store.toggleDone(todo, view.businessDate)"
+                @remove="store.removeTodo(todo)"
+                @carry-over="store.moveTodoTo(todo, view.businessDate)"
+              />
+            </template>
+          </div>
+        </template>
       </div>
 
-      <footer class="foot">
+      <footer v-if="activeTab !== 'calendar'" class="foot">
         <input
           ref="draftEl"
           v-model="draft"
           class="add"
           type="text"
-          placeholder="＋ 添加今天的待办，回车即存…"
+          :placeholder="placeholder"
           @mousedown="grabKeyboard"
           @blur="onInputBlur"
-          @keydown.enter="addTodo"
+          @keydown.enter="submitDraft"
         />
-        <div class="hint">
-          原型：鼠标移到屏幕最右侧窄条即展开，移开 1.5 秒后自动收起，📌 可钉住
-        </div>
       </footer>
     </section>
   </div>
@@ -301,6 +464,9 @@ body {
 
 /* ─────────────────────────────────────────────────────────────
    收起时露出的窄条
+   ⚠️ 跨层契约：height 必须与 Rust 侧 src-tauri/src/lib.rs 的
+      STRIP_HEIGHT 常量保持一致，否则"看得见的窄条"和
+      "能触发悬停的区域"会对不上。
    ───────────────────────────────────────────────────────────── */
 .strip {
   position: absolute;
@@ -375,25 +541,15 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 13px 13px 10px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  padding: 13px 13px 9px;
   flex: none;
 }
 
 .head-date {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
   font-size: 15px;
   font-weight: 700;
   color: #0f172a;
   letter-spacing: -0.01em;
-}
-
-.head-date span {
-  font-size: 11px;
-  font-weight: 500;
-  color: #94a3b8;
 }
 
 .head-count {
@@ -431,6 +587,39 @@ body {
   background: rgba(59, 110, 246, 0.13);
 }
 
+/* 页签 */
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 9px 8px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  flex: none;
+}
+
+.tab {
+  flex: 1;
+  padding: 5px 0;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: background 0.13s, color 0.13s;
+}
+
+.tab:hover {
+  background: rgba(15, 23, 42, 0.05);
+  color: #64748b;
+}
+
+.tab.on {
+  background: rgba(59, 110, 246, 0.1);
+  color: #3b6ef6;
+  font-weight: 600;
+}
+
 /* 列表区 */
 .scroll {
   flex: 1;
@@ -461,11 +650,16 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
   padding: 7px 8px 3px;
+  border: none;
+  background: transparent;
+  font-family: inherit;
   font-size: 11px;
   font-weight: 600;
   color: #94a3b8;
   letter-spacing: 0.02em;
+  text-align: left;
 }
 
 .group-title.clickable {
@@ -500,91 +694,166 @@ body {
   transform: rotate(90deg);
 }
 
-/* 单条待办 */
-.item {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  padding: 7px 8px;
-  border-radius: 9px;
-  transition: background 0.12s;
-}
-
-.item:hover {
-  background: rgba(15, 23, 42, 0.04);
-}
-
-.check {
-  position: relative;
-  width: 15px;
-  height: 15px;
-  margin-top: 1px;
-  flex: none;
-  border: 1.5px solid #cbd5e1;
-  border-radius: 5px;
+.carry-all {
+  margin-left: auto;
+  padding: 1px 7px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(234, 88, 12, 0.12);
+  font-family: inherit;
+  font-size: 10px;
+  color: #ea580c;
   cursor: pointer;
-  transition: border-color 0.13s, background 0.13s;
 }
 
-.check:hover {
-  border-color: #3b6ef6;
+.carry-all:hover {
+  background: rgba(234, 88, 12, 0.2);
 }
 
-.check.done {
-  background: #3b6ef6;
-  border-color: #3b6ef6;
+.nudge {
+  margin: 2px 8px 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.1);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #b45309;
 }
 
-.check.done::after {
-  content: "";
-  position: absolute;
-  left: 4px;
-  top: 1px;
-  width: 6px;
-  height: 3px;
-  border-left: 1.5px solid #fff;
-  border-bottom: 1.5px solid #fff;
-  transform: rotate(-45deg);
+/* 空态 / 加载 / 出错 */
+.empty {
+  margin: 22px 16px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: #b6c2d2;
+  text-align: center;
+  white-space: pre-line;
 }
 
-.body {
-  flex: 1;
-  min-width: 0;
+.empty.small {
+  margin: 10px 16px;
 }
 
-.text {
-  font-size: 13px;
-  line-height: 1.36;
-  color: #1e293b;
-  word-break: break-word;
+.loading {
+  margin: 22px 16px;
+  font-size: 11.5px;
+  color: #b6c2d2;
+  text-align: center;
 }
 
-.item.done .text {
-  color: #cbd5e1;
-  text-decoration: line-through;
+.fatal {
+  margin: 16px 12px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: rgba(220, 38, 38, 0.07);
+  font-size: 11px;
+  line-height: 1.6;
+  color: #b91c1c;
 }
 
-.meta {
+/* ── 日历 ── */
+.cal-head {
   display: flex;
   align-items: center;
-  gap: 7px;
-  margin-top: 2px;
-  font-size: 10px;
+  gap: 8px;
+  padding: 4px 6px 8px;
+}
+
+.cal-title {
+  flex: 1;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #334155;
+  text-align: center;
+}
+
+.cal-nav {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  font-size: 15px;
+  line-height: 1;
   color: #94a3b8;
+  cursor: pointer;
 }
 
-.meta .time {
+.cal-nav:hover {
+  background: rgba(15, 23, 42, 0.06);
+  color: #475569;
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
+  padding: 0 5px 6px;
+}
+
+.cal-wd {
+  padding: 2px 0 4px;
+  font-size: 10px;
+  color: #cbd5e1;
+  text-align: center;
+}
+
+.cal-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 30px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 11.5px;
+  color: #475569;
+  cursor: pointer;
+}
+
+.cal-cell:hover {
+  background: rgba(15, 23, 42, 0.05);
+}
+
+.cal-cell.dim {
+  color: #d8e0ea;
+}
+
+.cal-cell.today {
+  background: rgba(59, 110, 246, 0.1);
   color: #3b6ef6;
-  font-weight: 600;
+  font-weight: 700;
 }
 
-.meta .delay {
-  color: #f59e0b;
-  font-weight: 600;
+.cal-cell.picked {
+  background: #3b6ef6;
+  color: #fff;
+  font-weight: 700;
 }
 
-.meta .delay.hot {
-  color: #dc2626;
+.cal-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #3b6ef6;
+}
+
+.cal-cell.picked .cal-dot {
+  background: #fff;
+}
+
+.cal-dot[data-n="2"] {
+  width: 9px;
+  border-radius: 2px;
+}
+
+.cal-dot[data-n="3"] {
+  width: 14px;
+  border-radius: 2px;
 }
 
 /* 底部输入 */
@@ -615,13 +884,5 @@ body {
 .add:focus {
   background: rgba(59, 110, 246, 0.07);
   box-shadow: 0 0 0 1.5px rgba(59, 110, 246, 0.28);
-}
-
-.hint {
-  margin-top: 7px;
-  font-size: 10px;
-  line-height: 1.5;
-  color: #b6c2d2;
-  text-align: center;
 }
 </style>

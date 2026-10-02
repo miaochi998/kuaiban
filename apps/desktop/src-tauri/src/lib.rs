@@ -24,6 +24,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, WindowEvent,
 };
+use tauri_plugin_sql::{Migration, MigrationKind};
 
 /// 主窗口 label（与 tauri.conf.json 一致）
 const WIDGET_LABEL: &str = "main";
@@ -551,6 +552,59 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 }
 
 // ─────────────────────────────────────────────────────────────
+// 数据库迁移
+// ─────────────────────────────────────────────────────────────
+
+/// SQLite 数据库的逻辑名。
+///
+/// `sqlite:` 前缀是 tauri-plugin-sql 的路径约定；实际文件落在系统的应用数据目录下
+/// （macOS: ~/Library/Application Support/com.kuaiban.app/，Windows: %APPDATA%）。
+/// 单文件的好处：用户换电脑时把这个文件拷走就带走了全部数据。
+pub const DB_URL: &str = "sqlite:kuaiban.db";
+
+/// 数据库迁移。
+///
+/// 表结构是**与大脑的约定**（对应 packages/shared 里的 `Todo` 类型）：
+/// - 列名一律 snake_case，字段名 camelCase，映射在 `apps/desktop/src/data/todo-row.ts`。
+/// - `repeat` 与 `skipped_dates` 存 **JSON 文本**。
+///   为什么不拆成关联表：重复规则是一个封闭的小联合类型（5 种），
+///   拆表会让读写都变成多次往返，而它从不参与 SQL 查询条件 —— 存 JSON 更简单也更快。
+/// - `remind` 用 INTEGER 0/1（SQLite 没有原生 boolean）。
+/// - 软删除靠 `deleted_at`，**不做物理删除**：同步规则是"删除优先"，
+///   服务端需要看到"这条被删了"这个事实，而不是"查不到这条"。
+///
+/// SQL 放在 `src-tauri/migrations/*.sql`，用 `include_str!` 在编译期嵌进来。
+/// 这样做是为了**消除重复定义**：同一份 SQL 也被 TS 侧的真库往返测试读取
+/// （`apps/desktop/test/sqlite-roundtrip.test.ts`），
+/// 于是"Rust 建的表"和"TS 读写的表"不可能再对不上。
+///
+/// 刻意拆成 3 个版本而不是 1 个多语句迁移：SQLite 驱动对"一次执行多条语句"的
+/// 支持依实现而异，拆开可以确保每条都真的执行了（否则索引可能被静默跳过）。
+/// 版本号只增不改 —— 已经发布过的版本改了也不会重跑。
+fn migrations() -> Vec<Migration> {
+    vec![
+        Migration {
+            version: 1,
+            description: "create_todos",
+            sql: include_str!("../migrations/001_create_todos.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 2,
+            description: "index_todos_date",
+            sql: include_str!("../migrations/002_index_todos_date.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 3,
+            description: "index_todos_updated_at",
+            sql: include_str!("../migrations/003_index_todos_updated_at.sql"),
+            kind: MigrationKind::Up,
+        },
+    ]
+}
+
+// ─────────────────────────────────────────────────────────────
 // 入口
 // ─────────────────────────────────────────────────────────────
 
@@ -558,6 +612,11 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_sql::Builder::default()
+                .add_migrations(DB_URL, migrations())
+                .build(),
+        )
         .manage(WidgetState::default())
         .invoke_handler(tauri::generate_handler![
             set_expanded,

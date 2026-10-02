@@ -14,12 +14,21 @@
     "noEmit": true,
     "jsx": "preserve",
 
+    /* 测试文件里要用 node:fs / node:sqlite（真库往返测试），显式引入 node 类型 */
+    "types": ["node"],
+
     /* Linting */
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"],
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.d.ts",
+    "src/**/*.tsx",
+    "src/**/*.vue",
+    "test/**/*.ts"
+  ],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

@@ -23,6 +23,9 @@ tauri = { version = "2", features = [
     "macos-private-api",
 ] }
 tauri-plugin-opener = "2"
+# 本地持久化。sqlite 特性会带进 sqlx 的 SQLite 驱动。
+# 用 SQLite 而不是别的：单文件、快、用户换电脑直接拷走就能带走全部数据。
+tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

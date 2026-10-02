@@ -29,6 +29,9 @@ export * from "./repeat";
 export * from "./todo";
 export * from "./view";
 export * from "./reminder";
+export * from "./repository";
+export * from "./memory-repository";
+export * from "./service";
 
 // 领域类型从 shared 透出，调用方只需要依赖 core 一个包
 export type {

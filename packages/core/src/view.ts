@@ -16,12 +16,7 @@
 import { DEFAULT_DAY_BOUNDARY_HOUR, type DateKey, type Todo } from "@kuaiban/shared";
 import { addDays, businessDateKey, diffDays } from "./date";
 import { occursOn } from "./repeat";
-import {
-  isAlive,
-  isOccurrenceDone,
-  isOccurrenceSkipped,
-  isOccurrencePending,
-} from "./todo";
+import { isAlive, isOccurrencePending } from "./todo";
 
 /** 逾期 ≥ 这个天数，就该温和提醒用户"要不要改期 / 拆小 / 放弃" */
 export const OVERDUE_ATTENTION_DAYS = 3;

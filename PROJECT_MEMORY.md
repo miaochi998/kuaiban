@@ -108,6 +108,17 @@ G 高DPI ⚠️ 150% 通过；100%/125% 与多显示器未实测（环境限制�
 4. 架构建议：App.vue 直接 invoke("set_activatable") 带平台概念，建议后续加 apps/desktop/src/bridge/window.ts 薄封装，UI 只调 requestKeyboardFocus()/releaseKeyboardFocus()。
 
 【下一步】建 packages/core（大脑，守"零平台依赖"铁律）+ packages/shared + apps/server + apps/admin。
+- [2026-10-03 01:22] [工作记录] 大脑 @kuaiban/core 完成：148 个测试通过（4f5318a） — 里程碑：大脑 @kuaiban/core 完成并推送（commit 4f5318a），外壳手感修复（commit d8a146e），已 push origin main。
+
+【包结构】packages/shared（领域类型与常量，客户端/服务端共用）+ packages/core（纯 TS 大脑，零平台依赖）。包名 @kuaiban/shared、@kuaiban/core，pnpm workspace。测试框架 vitest 5.0.3。根脚本：pnpm test / pnpm typecheck / pnpm dev / pnpm build。前端用 vitest 时注意 src 内相对 import 已统一改为无扩展名（原为 ./x.js，Vite 解析存疑）。
+
+【零平台依赖铁律的守卫方式（可复用）】tsconfig 只开 lib: ["ES2022"]，刻意不引 DOM；crypto.randomUUID 用最小环境声明 packages/core/src/globals.d.ts（declare global { var crypto: { randomUUID?(): string } | undefined }）。这样一旦不小心引入平台 API 会在编译期暴露。148 个测试跑在纯 Node 环境下不报平台错误 = 铁律的机器可验证证明。
+
+【core 已实现】date.ts（业务日 04:00 边界、addDays/diffDays 用 UTC 正午锚点避夏令时、时刻解析规范化）、repeat.ts（occursOn/occurrencesBetween/nextOccurrenceOnOrAfter/normalizeRepeatRule/describeRepeat）、todo.ts（createTodo/completeOccurrence/uncompleteOccurrence/skipOccurrence/moveToDate/updateTodo/softDelete/restore/isAlive/overdueDays，全部纯函数）、view.ts（buildDailyView 四视图切分、sortForList、todosOnDate、monthGrid 42 格）、reminder.ts（fireAtFor/collectDueReminders 时间窗/批合并 batchReminders/isQuietTime/quietHoursEndAt/allDayTodosOn）。
+
+【关键设计决定】逾期天数**派生**（date 与今天算差）而非存储计数 —— 天生不会和存储不一致；逾期顺延不需要任何定时任务，只是业务日变了视图自然重算；重复任务用到时才判断"今天发生吗"不预造记录；每月 31 号遇 2 月跳过不挪月末；重复任务不进逾期区（否则天天报警让人麻木）。
+
+【测试规模】148 个，5 个文件（date 26 / repeat 35 / reminder 30 / view 26 / todo 31），耗时约 150ms。测试日期统一取 2026 年 6 月避开夏令时切换日。踩坑：测试 helper 生成的 id 必须零填充（t0001），否则 t9/t10 字典序错乱导致依赖"创建顺序"的断言随机失败。
 
 ## 经验教训 Lessons Learned
 
@@ -138,3 +149,21 @@ G 高DPI ⚠️ 150% 通过；100%/125% 与多显示器未实测（环境限制�
 【坑5｜悬停坐标自校正】不同 pwsh 调用的 DPI 感知模式不同会导致坐标整体缩放 1.5 倍，产生"悬停可见窄条没反应"的假象。用 GetPhysicalCursorPos 自校正后确认代码本身没问题。
 
 【方法论｜值得复用的验证手段】用客观 API 取证而非"我看着没问题"：任务栏/Alt+Tab → UI Automation 枚举按钮列表；鼠标穿透 → WindowFromPoint 命中测试（WS_EX_TRANSPARENT 会被跳过）；窗口是否贴边 → 读窗口物理矩形与屏幕宽比对；进程退出 → 进程数与退出码。注意 Win11 托盘"隐藏的图标"是 XAML 岛浮层，注入式 mouse_event 不认，需走 UI Automation Invoke。
+- [2026-10-03 01:22] [经验教训] 自动收起类交互必须排除"正在输入"；多层延迟必须内短外长 — 【教训｜"自动收起"这类交互必须显式排除「用户正在输入」】
+挂件原实现 scheduleCollapse 只判断 pinned，不判断输入框是否聚焦。后果：用户点输入框开始打字 → 鼠标随手移开（打字时手本来就会离开鼠标）→ 1.5 秒后面板收起、草稿白打。
+
+正确做法是三层防线，缺一不可：
+1. 前端收起倒计时要同时排除三种情况：已钉住 / 鼠标仍在面板内 / document.activeElement === 输入框。
+2. 输入框 blur 时必须**重新调一次**收起倒计时函数，否则取消焦点后再没人触发收起，面板会反向卡住。
+3. Rust 兜底收起（防前端收不到 mouseleave 导致面板永远卡住）也要看"是否正在输入"。
+   ⚠️ 踩坑：这个标志最初只在 Windows 分支维护（activatable 原语义 = "Windows 窗口可激活"），
+   导致非 Windows 平台恒为 false、保护完全失效。修法：把标志语义提升为「用户正在输入」，
+   **所有平台都正确维护**，只有"怎么让输入框真的收到键盘"才是平台专属（拆成 apply_activatable 的 cfg 分支）。
+
+【教训｜多层延迟收起必须"内层短、外层长"】
+前端 1.5 秒是正常路径，Rust 3 秒兜底只在前端收不到事件时救场。兜底阈值必须明显大于正常阈值（取 2 倍），否则会抢跑、破坏手感。这类"正常路径 + 兜底路径"的组合，一定要把"谁先谁后"写进注释，否则后人改参数极易踩塌。
+
+【教训｜双向同步的事件要无条件补发】
+set_pinned 原逻辑在"pinned=true 且面板已展开"时不发 widget:state（因为 set_expanded_inner 状态未变会提前 return），前端 📌 就不亮。凡是"前端要显示的状态"，Rust 侧设置后都应无条件补发一次事件，不要依赖下游的副作用。
+
+【遗留技术债】STRIP_HEIGHT=152 现在硬编码在 Rust 与 App.vue 两处，靠注释维系跨层契约，改样式极易忘记同步。更稳做法是前端上报或 Rust 下发。
