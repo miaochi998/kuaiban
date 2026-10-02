@@ -51,6 +51,7 @@ pub struct WidgetState {
     /// 其它平台无意义，恒为 false。
     activatable: AtomicBool,
     /// Windows：临时可激活之前的前台窗口句柄，用于交还焦点（0 = 无）
+    #[cfg_attr(not(windows), allow(dead_code))]
     prev_foreground: AtomicIsize,
 }
 
