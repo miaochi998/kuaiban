@@ -1,0 +1,15 @@
+{
+  "name": "kuaiban",
+  "version": "0.0.1",
+  "private": true,
+  "description": "快办 — 桌面待办清单（极简 · 到点强提醒 · 多端同步）",
+  "packageManager": "pnpm@10.23.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @kuaiban/desktop tauri dev",
+    "build": "pnpm --filter @kuaiban/desktop tauri build",    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck"
+  }
+}
