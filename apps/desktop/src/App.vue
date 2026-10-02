@@ -13,6 +13,8 @@ const COLLAPSE_DELAY_MS = 1500;
 
 const expanded = ref(false);
 const pinned = ref(false);
+/** 鼠标当前是否在面板范围内 —— 决定"输入结束后"要不要开始收起倒计时 */
+const pointerInside = ref(false);
 
 let unlisten: UnlistenFn | null = null;
 let leaveTimer: number | null = null;
@@ -24,12 +26,33 @@ function clearLeaveTimer() {
   }
 }
 
+/**
+ * 开始（或重开）收起倒计时。
+ *
+ * 三个"不能收"的条件，缺一个都会出问题：
+ * 1. `pinned` —— 用户钉住了，本来就不该收
+ * 2. `pointerInside` —— 鼠标还在面板上（例如刚输入完，鼠标没动过）
+ * 3. 输入框有焦点 —— **用户正在打字**。
+ *    打字时手会离开鼠标，鼠标很容易滑出窗口；不挡这一条，
+ *    1.5 秒后面板就会被收走、草稿白打。
+ *    （Rust 侧还有一道 3 秒兜底，靠 `activatable` 标志做同样的判断。）
+ */
 function scheduleCollapse() {
   if (pinned.value) return;
+  if (pointerInside.value) return;
+  if (draftEl.value !== null && document.activeElement === draftEl.value) return;
+
   clearLeaveTimer();
   leaveTimer = window.setTimeout(() => {
     void invoke("set_expanded", { expanded: false });
   }, COLLAPSE_DELAY_MS);
+}
+
+/** 输入结束：交还键盘焦点，并重新评估是否该开始收起倒计时 */
+function onInputBlur() {
+  releaseKeyboard();
+  // 不重新调一次的话，取消焦点后就没人再触发收起了 —— 面板会反向卡住
+  scheduleCollapse();
 }
 
 function togglePin() {
@@ -44,6 +67,8 @@ function onKeydown(e: KeyboardEvent) {
       // 先交还键盘焦点，再收起（收起后就不该再占着别人的键盘输入了）
       el.blur();
       releaseKeyboard();
+      clearLeaveTimer();
+      void invoke("set_expanded", { expanded: false });
       return;
     }
     if (!pinned.value) {
@@ -73,11 +98,20 @@ onMounted(async () => {
     }
   });
 
-  document.documentElement.addEventListener("mouseleave", scheduleCollapse);
-  document.documentElement.addEventListener("mouseenter", clearLeaveTimer);
+  document.documentElement.addEventListener("mouseleave", () => {
+    pointerInside.value = false;
+    scheduleCollapse();
+  });
+  document.documentElement.addEventListener("mouseenter", () => {
+    pointerInside.value = true;
+    clearLeaveTimer();
+  });
   // 兜底：某些 WebView 只给 mouseout
   document.addEventListener("mouseout", (e) => {
-    if (!e.relatedTarget) scheduleCollapse();
+    if (!e.relatedTarget) {
+      pointerInside.value = false;
+      scheduleCollapse();
+    }
   });
   window.addEventListener("keydown", onKeydown);
 });
@@ -222,7 +256,7 @@ function addTodo() {
           type="text"
           placeholder="＋ 添加今天的待办，回车即存…"
           @mousedown="grabKeyboard"
-          @blur="releaseKeyboard"
+          @blur="onInputBlur"
           @keydown.enter="addTodo"
         />
         <div class="hint">

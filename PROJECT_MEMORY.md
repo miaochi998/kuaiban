@@ -85,6 +85,29 @@
 【约束】仓库 github.com/miaochi998/kuaiban 为私有仓库，Windows 机器首次访问需一次性 `gh auth login`（本流程中唯一需用户动手之处）。
 
 【下一步】用户把 Windows 侧产出的《Windows 挂件验证报告》贴回 Mac 对话 → review 分支并合并 → 按真机手感调参（窄条宽度/收起延迟/面板宽度/DPI）→ 再开始建 packages/core（大脑）。归档：Mac 侧挂件仍在后台运行（后台 job bash-35，PID 78982），可用 job_kill 停止。
+- [2026-10-03 01:14] [工作记录] Windows 外壳验证通过并合并进 main（c711938）；四项遗留决策待定 — 【结果】Windows 侧交付的经验证外壳修复已 review 并合并到 main。
+
+提交链：fdc71d4（Windows 侧修复）→ 91a2575（Mac 侧清掉非 Windows 平台 prev_foreground 未使用警告）→ c711938（--no-ff 合并）→ 2c68309（README 更新）。分支 feat/windows-shell-verify 已同步。
+
+【合并前回归验证（macOS 侧执行）】Rust `cargo check` 0 error 0 warning；前端 `vue-tsc --noEmit && vite build` 通过，产物 69.17KB JS + 4.20KB CSS。
+
+【Windows 真机实测结论（Windows 11 build 26300，3840×2160 @150%，单显示器）】
+A 不抢焦点 ✅（悬停/点空白/勾选/钉住/面板开着打字 全程前台窗口不变；唯一例外是"点输入框"这一显式动作）
+B 不占任务栏 ✅（UI Automation 枚举 + Alt+Tab 截图双证据）
+C 贴边/悬停/收起 ✅（物理矩形 R=3840=屏宽，垂直居中；移开 1.58–1.63s 收起）
+D 收起时鼠标穿透 ✅（WindowFromPoint 命中底层窗口）
+E 输入框可打字 ✅（扩展样式 0x00000198 ⇄ 0x08000198 切换验证）
+F 托盘 ✅（UIA 名称「快办」，菜单两项，退出后进程 1→0 退出码 0）
+G 高DPI ⚠️ 150% 通过；100%/125% 与多显示器未实测（环境限制）
+环境备注：该机无管理员权限、装不了 VS Build Tools，用便携方案跑通（xwin 0.10 splat 取 MSVC CRT+SDK 10.0.26100 + 便携 LLVM 23.1.2 的 clang-cl/llvm-rc/llvm-lib + rustup 自带 rust-lld 作 linker，配置放 %USERPROFILE%\.cargo\config.toml 不进仓库）——"没有 VS Build Tools 也能构建"这条路是通的，可给 CI/构建机参考；有管理员权限时仍建议直接装 VS Build Tools。
+
+【待用户决策的遗留项（来自报告第 4 节）】
+1. 悬停命中区目前是窗口整个高度（560 逻辑 px ≈ 屏高 80%），大于可见窄条（152px）→ 在窄条上下方的"空白处"悬停也会弹出面板。要不要收紧到可见窄条高度？（产品手感决策）
+2. 从托盘菜单「显示面板」唤起时，鼠标没进入过窗口 → 收不到 mouseleave → 1.5s 自动收起不触发，面板一直开着。需统一语义：显式显示=钉住（并在 UI 体现），还是也走自动收起计时？
+3. 多显示器/显示器变化未处理：apply_layout 只在启动时跑一次；未响应拔插/分辨率/缩放变化；未定义"挂件跟随哪块屏"。
+4. 架构建议：App.vue 直接 invoke("set_activatable") 带平台概念，建议后续加 apps/desktop/src/bridge/window.ts 薄封装，UI 只调 requestKeyboardFocus()/releaseKeyboardFocus()。
+
+【下一步】建 packages/core（大脑，守"零平台依赖"铁律）+ packages/shared + apps/server + apps/admin。
 
 ## 经验教训 Lessons Learned
 
@@ -100,3 +123,18 @@
 【适用范围/否定条件】仅 Windows 桌面挂件形态；macOS 用 ActivationPolicy::Accessory 不涉及此冲突。替代做法是精细控制 WM_MOUSEACTIVATE 返回 MA_NOACTIVATE，但需评估。
 
 【关联的通用教训】#[cfg(windows)] 的代码在 macOS 上会被完全跳过、永不参与编译。在 Mac 上写 Windows 专属代码 = 未经验证的代码，必须安排真机编译验证。已知易错点：window.hwnd() 返回的 HWND 与自备 windows crate 版本的 HWND 常为不同类型（版本不一致 → 类型不匹配）；稳妥修法是改用 raw-window-handle 取 RawWindowHandle::Win32(h) 再 HWND(h.hwnd.get() as *mut _)，或把 windows crate 版本对齐 tauri 实际使用版本（cargo tree -i windows 查）。
+- [2026-10-03 01:14] [经验教训] Windows 挂件验证的五个坑：SetFocus 焦点死循环、APPWINDOW 冲突、DPI 截图失真 — Windows 挂件外壳验证中踩到的坑与可复用结论（来源：docs/windows-verify/README.md，分支 feat/windows-shell-verify → 已合并 main c711938）：
+
+【坑1｜不要凭猜测判定编译问题】我曾预判「#[cfg(windows)] 代码从未在 Windows 编译过 → 大概率编不过」。实测否证：原代码 `HWND(handle.0 as _)` 能编过（0 error/0 warning），因为跨版本裸指针被 `as _` 硬转绕过了。教训：跨平台条件编译代码的风险要实测确认，不要写成结论；但即便能编，依赖「两个 crate 版本的 HWND 都是 *mut c_void」仍是隐含契约，改用 raw-window-handle 是加固而非修复。
+
+【坑2｜SetFocus 引发 WebView2 focus/blur 死循环（最重要）】Windows 上「摘掉 WS_EX_NOACTIVATE + SetForegroundWindow + SetFocus(顶层 HWND)」并且前端在 @focus 事件里申请激活 → SetFocus 把 WebView2 子窗口焦点顶掉 → 输入框立刻 blur → 释放激活 → 挂件失活 → WebView2 重新 focus 输入框 → @focus 又申请激活 → 每秒上千次循环，键盘输入全丢。
+正解：**只 SetForegroundWindow，绝不 SetFocus（顶层 HWND）；激活只由「用户点输入框」这一显式动作（@mousedown）驱动，绝不由 @focus 事件驱动**。
+归还三条路径防卡死：输入框 @blur、面板收起/Esc（Rust 强制）、80ms 轮询看门狗补装 NOACTIVATE。归还前先判断 GetForegroundWindow()==自己 才 SetForegroundWindow(prev)，否则等于把焦点抢回来。
+
+【坑3｜WS_EX_APPWINDOW 与 WS_EX_TOOLWINDOW 同时位存】tao 创建窗口时按 WindowFlags 带上 WS_EX_APPWINDOW，Tauri 的 skipTaskbar 只是事后调 ITaskbarList::DeleteTab 摘按钮，位还留着（explorer 重启可能被重画）。正解：在设置扩展样式时统一 `(current | TOOLWINDOW) & !APPWINDOW`。
+
+【坑4｜150% DPI + 硬件合成下截图会失真/截丢】PowerShell(.NET WinForms) 进程是 DPI 不感知的，Screen.Bounds 返回逻辑分辨率；GDI BitBlt 不带 CAPTUREBLT 抓不到 WebView2 合成层（挂件在截图里"消失"）。正解：独立进程 + SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2) + BitBlt(SRCCOPY|CAPTUREBLT)。脚本见 docs/windows-verify/shot.ps1。
+
+【坑5｜悬停坐标自校正】不同 pwsh 调用的 DPI 感知模式不同会导致坐标整体缩放 1.5 倍，产生"悬停可见窄条没反应"的假象。用 GetPhysicalCursorPos 自校正后确认代码本身没问题。
+
+【方法论｜值得复用的验证手段】用客观 API 取证而非"我看着没问题"：任务栏/Alt+Tab → UI Automation 枚举按钮列表；鼠标穿透 → WindowFromPoint 命中测试（WS_EX_TRANSPARENT 会被跳过）；窗口是否贴边 → 读窗口物理矩形与屏幕宽比对；进程退出 → 进程数与退出码。注意 Win11 托盘"隐藏的图标"是 XAML 岛浮层，注入式 mouse_event 不认，需走 UI Automation Invoke。

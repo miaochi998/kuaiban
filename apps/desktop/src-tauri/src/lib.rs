@@ -11,7 +11,8 @@
 //!   * 窗口**始终保持展开尺寸**，收起时靠 CSS 把面板滑出窗口 + 让鼠标穿透。
 //!     这样动画平滑，且不会在缩放窗口时抖动。
 //!   * 收起状态鼠标是穿透的，收不到 hover 事件，所以**悬停判定用轮询鼠标坐标**。
-//!   * 展开后由前端 mouseleave + 1.5 秒延迟收起；Rust 侧只负责「展开」。
+//!   * 展开后由前端 mouseleave + 1.5 秒延迟收起；Rust 侧主要负责「展开」，
+//!     另有一道明显更长（3 秒）的兜底收起，防止前端收不到该事件时面板永远卡住。
 //!   * 不抢焦点：Windows 上必须设 WS_EX_NOACTIVATE，否则点一下挂件会把
 //!     用户正在用的窗口夺走焦点 —— 那这个软件就没法用了。
 
@@ -31,10 +32,32 @@ const WIDGET_LABEL: &str = "main";
 const PANEL_WIDTH: f64 = 340.0;
 /// 面板最大高度（逻辑像素），实际取屏幕高度的 80% 与它的小值
 const PANEL_MAX_HEIGHT: f64 = 560.0;
-/// 收起时露在屏幕右侧的窄条宽度（逻辑像素），也是悬停命中区
+/// 收起时露在屏幕右侧的窄条宽度（逻辑像素），也是悬停命中区的宽度
 const STRIP_WIDTH: f64 = 12.0;
+/// 收起时**可见**窄条的高度（逻辑像素）。
+///
+/// ⚠️ 跨层契约：必须与 `apps/desktop/src/App.vue` 里 `.strip { height: 152px }` 保持一致。
+/// 改一个必须同时改另一个 —— 否则"看得见的窄条"与"能触发悬停的区域"会对不上，
+/// 表现为「鼠标明明没碰到窄条，面板却自己弹出来了」。
+const STRIP_HEIGHT: f64 = 152.0;
+/// 悬停命中区在窄条上下各外扩的手感容差（逻辑像素）。
+/// 纯粹是为了让鼠标不至于因为差一两个像素就悬停不上，不宜放大。
+const STRIP_HIT_PADDING: f64 = 8.0;
 /// 鼠标坐标轮询间隔（毫秒）
 const POLL_INTERVAL_MS: u64 = 80;
+/// 兜底收起阈值：面板展开、未钉住，但鼠标**连续**在窗口外超过这么久（毫秒）→ 强制收起。
+///
+/// 为什么需要这道兜底：前端靠 `mouseleave` + 1.5 秒延迟收起，但存在收不到该事件的路径
+/// —— 例如从托盘唤起后面板被钉住、用户点了 📌 取消钉住时 mouseleave 已经先一步因
+/// `pinned` 为 true 而被忽略 —— 面板就会永远卡在展开状态。
+///
+/// ⚠️ 必须**明显大于**前端 `App.vue` 里的 `COLLAPSE_DELAY_MS`(1500ms)，
+/// 否则会抢在前端正常收起之前把面板收掉，破坏「移开 1.5 秒才收起」的手感。这里取 2 倍。
+const OUTSIDE_COLLAPSE_MS: u64 = 3_000;
+/// 把上面的毫秒阈值折算成轮询次数（3000 / 80 = 38 次）
+const OUTSIDE_STREAK_LIMIT: u32 = OUTSIDE_COLLAPSE_MS.div_ceil(POLL_INTERVAL_MS) as u32;
+/// 判定「鼠标在窗口之外」时预留的余量（逻辑像素），避免鼠标贴着边缘时来回抖动
+const OUTSIDE_MARGIN: f64 = 24.0;
 
 // ─────────────────────────────────────────────────────────────
 // 状态
@@ -140,17 +163,27 @@ fn set_expanded(app: AppHandle, expanded: bool) {
     set_expanded_inner(&app, expanded);
 }
 
-#[tauri::command]
-fn set_pinned(app: AppHandle, pinned: bool) {
+/// 设置「钉住」状态；`pinned = true` 时立即展开。
+///
+/// 抽成 `_inner` 是因为托盘也要用：**从托盘显式显示面板等价于钉住**（见 `tray_toggle`）。
+fn set_pinned_inner(app: &AppHandle, pinned: bool) {
     let state = app.state::<WidgetState>();
     state.pinned.store(pinned, Ordering::Relaxed);
 
     if pinned {
         // 钉住立刻展开
-        set_expanded_inner(&app, true);
-    } else {
-        let _ = app.emit("widget:state", state.status());
+        set_expanded_inner(app, true);
     }
+
+    // 无论展开状态有没有变化，都要补发一次事件：
+    // `set_expanded_inner` 在"状态没变"时会提前 return、不发事件，
+    // 那条路径下前端就看不到 pinned 的变化（例如托盘钉住一个已经展开的面板）。
+    let _ = app.emit("widget:state", state.status());
+}
+
+#[tauri::command]
+fn set_pinned(app: AppHandle, pinned: bool) {
+    set_pinned_inner(&app, pinned);
 }
 
 #[tauri::command]
@@ -180,6 +213,9 @@ fn set_activatable(app: AppHandle, activatable: bool) {
 // ─────────────────────────────────────────────────────────────
 
 fn spawn_hover_watcher(app: AppHandle) {
+    // 「鼠标连续在窗口之外」的轮询计数，只服务于兜底收起（见 OUTSIDE_STREAK_LIMIT）
+    let mut outside_streak: u32 = 0;
+
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
 
@@ -193,9 +229,8 @@ fn spawn_hover_watcher(app: AppHandle) {
             }
         }
 
-        if state.pinned.load(Ordering::Relaxed) || state.expanded.load(Ordering::Relaxed) {
-            continue;
-        }
+        let pinned = state.pinned.load(Ordering::Relaxed);
+        let expanded = state.expanded.load(Ordering::Relaxed);
 
         let Some(window) = app.get_webview_window(WIDGET_LABEL) else {
             continue;
@@ -213,17 +248,66 @@ fn spawn_hover_watcher(app: AppHandle) {
         };
 
         let scale = window.scale_factor().unwrap_or(1.0);
-        let strip = STRIP_WIDTH * scale;
 
-        let right = win_pos.x as f64 + win_size.width as f64;
+        let left = win_pos.x as f64;
+        let right = left + win_size.width as f64;
         let top = win_pos.y as f64;
         let bottom = top + win_size.height as f64;
+        // 面板是垂直居中的（见 apply_layout），所以窗口纵向中心就是可见窄条的纵向中心
+        let center_y = (top + bottom) / 2.0;
 
-        // 命中区：窗口最右侧 STRIP_WIDTH 宽的那一条（也就是屏幕最右边一条）
+        // 钉住状态：展开与收起完全交给前端 📌 和托盘，轮询不插手
+        if pinned {
+            outside_streak = 0;
+            continue;
+        }
+
+        // ── 兜底收起 ──
+        // 只在"已展开"时生效。正常情况下前端 mouseleave 会在 1.5 秒后收起，
+        // 这里仅仅是为了防止前端收不到该事件时面板永远卡住。
+        // 阈值 3 秒 > 前端 1.5 秒，正常路径下永远不会抢跑。
+        if expanded {
+            // 用户正在输入时绝不收起：Windows 下 activatable = true 等价于「输入框有焦点」。
+            // 否则鼠标一离开窗口，就会把正在输入的面板收掉、草稿白打。
+            // ⚠️ 非 Windows 平台该标志恒为 false，这条保护不生效
+            //    （macOS 的同类问题必须在前端 App.vue 的 scheduleCollapse 里修）。
+            if state.activatable.load(Ordering::Relaxed) {
+                outside_streak = 0;
+                continue;
+            }
+
+            let margin = OUTSIDE_MARGIN * scale;
+            let outside = cursor.x < left - margin
+                || cursor.x > right + margin
+                || cursor.y < top - margin
+                || cursor.y > bottom + margin;
+
+            if outside {
+                outside_streak += 1;
+                if outside_streak >= OUTSIDE_STREAK_LIMIT {
+                    outside_streak = 0;
+                    set_expanded_inner(&app, false);
+                }
+            } else {
+                outside_streak = 0;
+            }
+            continue;
+        }
+
+        // ── 悬停展开 ──
+        outside_streak = 0;
+
+        let strip = STRIP_WIDTH * scale;
+        // 命中区的纵向半高 = 可见窄条半高 + 手感容差
+        let half_hit = (STRIP_HEIGHT / 2.0 + STRIP_HIT_PADDING) * scale;
+
+        // 命中区：屏幕最右侧 STRIP_WIDTH 宽、纵向**以可见窄条为准**的那一段。
+        // 注意不是整个窗口高度 —— 否则在窄条上下方的空白处悬停也会弹出面板，
+        // 用户会被莫名其妙弹出来的面板吓到。
         let in_strip = cursor.x >= right - strip
             && cursor.x <= right + 2.0
-            && cursor.y >= top
-            && cursor.y <= bottom;
+            && cursor.y >= center_y - half_hit
+            && cursor.y <= center_y + half_hit;
 
         if in_strip {
             set_expanded_inner(&app, true);
@@ -321,16 +405,26 @@ fn make_non_activating(_window: &WebviewWindow) {
     // macOS 上等价能力通过 ActivationPolicy::Accessory 实现（在 setup 里设置）
 }
 
-#[cfg(windows)]
+/// 记录「用户正在挂件里输入」这一状态，并（仅 Windows）相应切换窗口的激活策略。
+///
+/// ⚠️ 这个标志**所有平台都要正确维护**，不能只在 Windows 上记：
+/// Rust 侧的兜底收起（`spawn_hover_watcher` 里那道 3 秒的）要靠它避免
+/// "打字打到一半、鼠标一移开面板就被收走、草稿白打"。
+/// Windows 上它额外决定窗口要不要临时变成可激活（否则输入框根本收不到键盘输入）。
 fn set_activatable_inner(app: &AppHandle, activatable: bool) {
-    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
-
     let state = app.state::<WidgetState>();
-    // 状态没变就不碰窗口 API（前端 focus/blur 可能重复调用）
+    // 状态没变就不做后续动作（前端 mousedown / blur 可能重复调用）
     if state.activatable.swap(activatable, Ordering::Relaxed) == activatable {
         return;
     }
+    apply_activatable(app, activatable);
+}
 
+#[cfg(windows)]
+fn apply_activatable(app: &AppHandle, activatable: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
+
+    let state = app.state::<WidgetState>();
     let Some(window) = app.get_webview_window(WIDGET_LABEL) else {
         return;
     };
@@ -379,8 +473,9 @@ fn set_activatable_inner(app: &AppHandle, activatable: bool) {
 }
 
 #[cfg(not(windows))]
-fn set_activatable_inner(_app: &AppHandle, _activatable: bool) {
-    // 非 Windows 平台不需要动态切换激活策略
+fn apply_activatable(_app: &AppHandle, _activatable: bool) {
+    // macOS 用 ActivationPolicy::Accessory 一次性搞定，不需要动态切换窗口激活策略。
+    // 但上面的 activatable 标志已经记下了 —— Rust 侧兜底收起靠它避免打字时被收走。
 }
 
 /// 看门狗：只要当前不是"需要输入"状态，就确保 WS_EX_NOACTIVATE 在位。
@@ -400,6 +495,27 @@ fn ensure_non_activating(_window: &WebviewWindow) {}
 // 系统托盘
 // ─────────────────────────────────────────────────────────────
 
+/// 托盘「显示 / 隐藏面板」菜单项与托盘图标左键点击的**统一**行为。
+///
+/// 语义约定（用户已拍板）：**从托盘显式显示面板 = 钉住**。
+/// 原因：从托盘唤起时鼠标并没有进入过窗口，前端收不到 `mouseleave`，
+/// 所以 1.5 秒自动收起不会触发 —— 不钉住的话面板会一直开着，用户也不知道为什么。
+/// 钉住后 📌 会亮起来，语义变得清晰：「这是你从托盘叫出来的」。
+fn tray_toggle(app: &AppHandle) {
+    let state = app.state::<WidgetState>();
+    let expanded = state.expanded.load(Ordering::Relaxed);
+
+    if expanded {
+        // 隐藏：**先取消钉住，再收起**。
+        // 顺序不能反 —— `set_expanded` 命令里有「钉住时拒绝收起」的判断，
+        // 虽然这里直接调 inner 绕过了它，但保持"先解锁再关"的顺序更不容易踩坑。
+        set_pinned_inner(app, false);
+        set_expanded_inner(app, false);
+    } else {
+        set_pinned_inner(app, true);
+    }
+}
+
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let toggle = MenuItemBuilder::with_id("toggle", "显示 / 隐藏面板").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "退出快办").build(app)?;
@@ -410,11 +526,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "toggle" => {
-                let state = app.state::<WidgetState>();
-                let expanded = state.expanded.load(Ordering::Relaxed);
-                set_expanded_inner(app, !expanded);
-            }
+            "toggle" => tray_toggle(app),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -425,10 +537,8 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 ..
             } = event
             {
-                let app = tray.app_handle();
-                let state = app.state::<WidgetState>();
-                let expanded = state.expanded.load(Ordering::Relaxed);
-                set_expanded_inner(app, !expanded);
+                // 左键点击与菜单项「显示 / 隐藏面板」行为完全一致
+                tray_toggle(tray.app_handle());
             }
         });
 
