@@ -951,8 +951,9 @@ test("设置里说清「不登录也能用」，并把登录入口摆出来", as
   await expect(page.locator(".settings-panel")).toContainText("只存在这台电脑上");
   await expect(page.locator('input[placeholder="登录名"]')).toBeVisible();
   await expect(page.locator('input[placeholder="密码"]')).toBeVisible();
-  // 默认服务器地址已经填好，用户不用去查
-  await expect(page.locator('input[placeholder^="http"]')).toHaveValue(/^http/);
+  // 服务器地址**不该**让用户填：它是安装时就配好的
+  await expect(page.locator('input[placeholder^="http"]')).toHaveCount(0);
+  await expect(page.locator(".settings-panel")).toContainText("安装时就配好的");
 });
 
 test("不登录照样能记待办 —— 这是离线优先的底线", async ({ page }) => {

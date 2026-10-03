@@ -19,16 +19,27 @@ import type { AuthUser } from "@kuaiban/core";
 
 const STORAGE_KEY = "kuaiban.account.v1";
 
-/** 默认服务器地址。部署后由用户在设置里改成公司地址 */
-export const DEFAULT_SERVER_URL = "http://127.0.0.1:8787";
+/**
+ * 服务器地址：**构建时就烧进安装包里，用户不需要知道、也没法填**。
+ *
+ * 一开始我把它做成了设置里的一个输入框 —— 用户一看就反问
+ * "难道还需要用户自己填服务器地址吗？"。确实不该：
+ * 这是个公司内部工具，服务器在哪儿是**管理员部署时决定的事**，
+ * 让每个员工去手抄一个 URL 既不合理、也一定会有人填错。
+ *
+ * 打包时用环境变量指定：
+ *     VITE_KUAIBAN_SERVER=https://kuaiban.example.com pnpm build
+ * 不指定时回退到本机地址，方便本地开发。
+ */
+export const SERVER_URL: string =
+  (import.meta.env?.VITE_KUAIBAN_SERVER as string | undefined)?.replace(/\/+$/, "") ||
+  "http://127.0.0.1:8787";
 
 interface StoredAccount {
-  serverUrl: string;
   token: string;
   user: AuthUser;
 }
 
-const serverUrl = ref(DEFAULT_SERVER_URL);
 const token = ref<string | null>(null);
 const user = ref<AuthUser | null>(null);
 const busy = ref(false);
@@ -45,7 +56,6 @@ export function loadAccount(): void {
     const raw = globalThis.localStorage?.getItem(STORAGE_KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw) as Partial<StoredAccount>;
-    if (typeof parsed.serverUrl === "string") serverUrl.value = parsed.serverUrl;
     if (typeof parsed.token === "string" && parsed.token) token.value = parsed.token;
     if (parsed.user && typeof parsed.user === "object") user.value = parsed.user as AuthUser;
   } catch {
@@ -61,7 +71,7 @@ function persist(): void {
     }
     globalThis.localStorage?.setItem(
       STORAGE_KEY,
-      JSON.stringify({ serverUrl: serverUrl.value, token: token.value, user: user.value }),
+      JSON.stringify({ token: token.value, user: user.value }),
     );
   } catch {
     /* 存不下就下次重新登录，不影响使用 */
@@ -98,7 +108,7 @@ export async function apiFetch<T>(
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (token.value) headers.authorization = `Bearer ${token.value}`;
 
-    const response = await fetch(`${serverUrl.value}${path}`, {
+    const response = await fetch(`${SERVER_URL}${path}`, {
       method: init.method ?? (init.body ? "POST" : "GET"),
       headers,
       signal: controller.signal,
@@ -191,19 +201,9 @@ export async function changePassword(oldPassword: string, newPassword: string): 
   }
 }
 
-export function setServerUrl(url: string): void {
-  serverUrl.value = url.trim().replace(/\/+$/, "") || DEFAULT_SERVER_URL;
-  persist();
-}
-
-/** 用户在设置里改了服务器地址后，需要重新拉一次数据 */
-export function resetForNewServer(): void {
-  clearSession();
-}
-
 export function useAccountStore() {
   return {
-    serverUrl,
+    serverUrl: SERVER_URL,
     user,
     token,
     busy,
@@ -212,7 +212,6 @@ export function useAccountStore() {
     login,
     logout,
     changePassword,
-    setServerUrl,
   };
 }
 

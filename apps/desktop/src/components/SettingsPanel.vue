@@ -26,7 +26,6 @@ const { settings: reminderSettings, inQuietHours } = reminders;
 
 const loginUser = ref("");
 const loginPass = ref("");
-const serverDraft = ref(account.serverUrl.value);
 const busy = ref(false);
 const error = ref<string | null>(null);
 
@@ -66,12 +65,6 @@ async function doLogin() {
 async function doLogout() {
   sync.stopSync();
   await account.logout();
-  error.value = null;
-}
-
-function saveServerUrl() {
-  account.setServerUrl(serverDraft.value);
-  serverDraft.value = account.serverUrl.value;
   error.value = null;
 }
 </script>
@@ -135,11 +128,9 @@ function saveServerUrl() {
         >把本地待办过户给当前账号</button>
       </div>
 
-      <div class="sp-section">服务器地址</div>
-      <div class="sp-row">
-        <input v-model="serverDraft" class="sp-input grow" type="text" placeholder="http://…" />
-        <button class="sp-btn" type="button" @click="saveServerUrl">保存</button>
-      </div>
+      <p class="sp-note">
+        服务器地址是安装时就配好的，你不用填。
+      </p>
 
       <!-- ── 提醒 ── -->
       <div class="sp-section">提醒</div>
