@@ -908,3 +908,61 @@ test("已完成的行里按钮变成「撤销」", async ({ page }) => {
   await doneRow.hover();
   await expect(doneRow.locator(".act.primary")).toHaveText("撤销");
 });
+
+// ─────────────────────────────────────────────────────────────
+// 账号与同步（离线优先）
+//
+// 核心约定：**不登录也是一等公民**。服务器没部署、断网、公司网络出问题，
+// 都不该让人记不了事。登录只是为了多设备同步。
+// 这些用例在浏览器里跑（没有服务端），正好验证"连不上时不会卡住"。
+// ─────────────────────────────────────────────────────────────
+
+test("默认未登录：状态点是灰的，设置里有登录入口", async ({ page }) => {
+  await expect(page.locator(".sync-dot")).toHaveClass(/off/);
+
+  await page.locator(".sync-dot").click();
+  await expect(page.locator(".settings")).toBeVisible();
+  await expect(page.locator('input[placeholder="登录名"]')).toBeVisible();
+  await expect(page.locator('input[placeholder="密码"]')).toBeVisible();
+  // 默认服务器地址已经填好，用户不用去查
+  await expect(page.locator('input[placeholder^="http"]')).toHaveValue(/^http/);
+});
+
+test("不登录照样能记待办 —— 这是离线优先的底线", async ({ page }) => {
+  const errors = collectErrors(page);
+
+  await page.fill(".add", "没登录也能记");
+  await page.press(".add", "Enter");
+
+  await expect(page.locator(".row", { hasText: "没登录也能记" })).toBeVisible();
+  await expect(page.locator(".sync-dot")).toHaveClass(/off/);
+  expect(errors).toEqual([]);
+});
+
+test("登录失败会给一句人话，而不是一直转圈", async ({ page }) => {
+  await page.locator(".sync-dot").click();
+  await page.locator('input[placeholder="登录名"]').fill("someone");
+  await page.locator('input[placeholder="密码"]').fill("password123");
+  await page.locator(".set-wide").click();
+
+  // 不断言具体文案：本机可能真的起了服务端（那时是"登录名或密码不对"），
+  // 也可能没有（"连不上服务器"）。要守的性质是**一定给出一句人话、而且不会卡住**。
+  await expect(page.locator(".es-error")).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator(".es-error")).not.toBeEmpty();
+  await expect(page.locator(".set-wide")).toBeEnabled(); // 不能卡在"登录中…"
+});
+
+test("同步失败不影响本地记录", async ({ page }) => {
+  await page.locator(".sync-dot").click();
+  await page.locator('input[placeholder="登录名"]').fill("someone");
+  await page.locator('input[placeholder="密码"]').fill("password123");
+  await page.locator(".set-wide").click();
+  await expect(page.locator(".es-error")).toBeVisible({ timeout: 20_000 });
+
+  await page.keyboard.press("Escape");
+  // 关掉设置，回到清单
+  await page.locator(".pin", { hasText: "⚙" }).click();
+  await page.fill(".add", "断网也要能记");
+  await page.press(".add", "Enter");
+  await expect(page.locator(".row", { hasText: "断网也要能记" })).toBeVisible();
+});

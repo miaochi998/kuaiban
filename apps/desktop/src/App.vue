@@ -14,6 +14,8 @@ import {
 } from "./lib/hints";
 import { parseDraft } from "./lib/parse-draft";
 import { SNOOZE_SHORT_MS, startReminders, useReminderStore } from "./store/reminders";
+import { DEFAULT_SERVER_URL, useAccountStore } from "./store/account";
+import { startSync, useSyncStore } from "./store/sync";
 import { useTodoStore, type PanelTab } from "./store/todos";
 
 // ─────────────────────────────────────────────────────────────
@@ -148,6 +150,8 @@ onMounted(async () => {
 
   // 提醒轮询。放在挂载之后启动：它依赖待办列表已经能读到。
   startReminders();
+  // 同步：没登录时它什么都不做（离线优先）
+  startSync();
 });
 
 onUnmounted(() => {
@@ -191,6 +195,58 @@ const {
 } = reminders;
 
 const showSettings = ref(false);
+
+// ── 账号与同步（离线优先：不登录也能正常用，只是不同步）──
+const account = useAccountStore();
+const sync = useSyncStore();
+const { status: syncStatus } = sync;
+
+const loginUser = ref("");
+const loginPass = ref("");
+const serverDraft = ref(account.serverUrl.value);
+
+/** 同步状态点：颜色 + 文案。一眼看出"我的东西传上去了没" */
+const syncDot = computed(() => {
+  switch (syncStatus.value.state) {
+    case "syncing":
+      return { cls: "syncing", label: "正在同步…" };
+    case "error":
+      return { cls: "error", label: sync.lastError.value ?? "同步出错" };
+    case "synced":
+      return { cls: "ok", label: "已同步" };
+    default:
+      return { cls: "off", label: "未登录（只在本地保存）" };
+  }
+});
+
+const syncDetail = computed(() => {
+  const pending = syncStatus.value.pendingCount;
+  if (!account.loggedIn.value) return "登录后可在多台设备之间同步";
+  if (pending > 0) return `还有 ${pending} 条待上传`;
+  return "本地与服务器一致";
+});
+
+async function doLogin() {
+  if (!loginUser.value.trim() || !loginPass.value) return;
+  if (await account.login(loginUser.value.trim(), loginPass.value)) {
+    loginPass.value = "";
+    sync.startSync();
+    showSettings.value = false;
+    store.flashNotice("已登录，开始同步");
+  }
+}
+
+async function doLogout() {
+  sync.stopSync();
+  await account.logout();
+  store.flashNotice("已退出登录（本地数据仍在）");
+}
+
+function saveServerUrl() {
+  account.setServerUrl(serverDraft.value);
+  serverDraft.value = account.serverUrl.value;
+  store.flashNotice("服务器地址已保存，请重新登录");
+}
 
 /**
  * 正在编辑哪一条（null = 没在编辑）。
@@ -417,6 +473,13 @@ function shiftMonth(delta: number) {
         <div class="head-date">{{ todayLabel }}</div>
         <div class="head-count">还有 <b>{{ remainingCount }}</b> 件</div>
         <button
+          class="sync-dot"
+          :class="syncDot.cls"
+          type="button"
+          :title="`${syncDot.label}（点击打开设置）`"
+          @click="showSettings = true"
+        ></button>
+        <button
           class="pin"
           type="button"
           :title="showSettings ? '关闭设置' : '设置'"
@@ -496,6 +559,65 @@ function shiftMonth(delta: number) {
 
         <!-- ── 设置 ── -->
         <div v-else-if="showSettings" class="settings">
+          <!-- ── 账号与同步 ── -->
+          <div class="set-row">
+            <span class="set-label">同步</span>
+            <span class="set-note inline" :class="syncDot.cls">{{ syncDot.label }}</span>
+          </div>
+
+          <template v-if="account.loggedIn.value">
+            <div class="set-row">
+              <span class="set-label">
+                {{ account.user.value?.displayName }}（{{ account.user.value?.username }}）
+              </span>
+              <button class="set-link" type="button" @click="sync.syncNow()">立即同步</button>
+              <button class="set-toggle" type="button" @click="doLogout">退出</button>
+            </div>
+            <p class="set-note">{{ syncDetail }}</p>
+          </template>
+
+          <template v-else>
+            <p class="set-note">
+              不登录也能正常用 —— 数据一直存在这台电脑上。登录只是为了多设备同步。
+            </p>
+            <input v-model="loginUser" class="es-input small" type="text" placeholder="登录名" />
+            <input
+              v-model="loginPass"
+              class="es-input small"
+              type="password"
+              placeholder="密码"
+              @keydown.enter="doLogin"
+            />
+            <button class="set-wide" type="button" :disabled="account.busy.value" @click="doLogin">
+              {{ account.busy.value ? "登录中…" : "登录并开始同步" }}
+            </button>
+            <p v-if="account.lastError.value" class="es-error">{{ account.lastError.value }}</p>
+          </template>
+
+          <div class="set-row">
+            <span class="set-label">服务器地址</span>
+            <button class="set-link" type="button" @click="saveServerUrl">保存</button>
+          </div>
+          <input
+            v-model="serverDraft"
+            class="es-input small"
+            type="text"
+            :placeholder="DEFAULT_SERVER_URL"
+          />
+
+          <!-- 本地数据属于别的账号：停下来说清楚，绝不硬推 -->
+          <div v-if="sync.conflictOwner.value" class="owner-warning">
+            <p class="set-note warn">
+              这台电脑上的待办属于另一个账号（{{ sync.conflictOwner.value.slice(0, 8) }}…）。
+              要用当前账号同步，需要把这份数据过户给它。
+            </p>
+            <button
+              class="set-wide warn"
+              type="button"
+              @click="sync.adoptLocalDataFor(account.user.value!.id)"
+            >把本地待办过户给当前账号</button>
+          </div>
+
           <div class="set-row">
             <span class="set-label">提醒声音</span>
             <button
@@ -1217,6 +1339,82 @@ body {
 
 .ms-close:hover {
   background: rgba(59, 110, 246, 0.24);
+}
+
+/* 同步状态点 */
+.sync-dot {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: #cbd5e1;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.sync-dot.ok {
+  background: #22c55e;
+}
+
+.sync-dot.syncing {
+  background: #f59e0b;
+  animation: dot-pulse 1s ease-in-out infinite;
+}
+
+.sync-dot.error {
+  background: #dc2626;
+}
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* 设置面板 */
+.set-note.inline {
+  margin: 0;
+  flex: none;
+}
+
+.set-note.warn {
+  color: #b45309;
+}
+
+.set-wide {
+  width: 100%;
+  margin-top: 7px;
+  padding: 7px 0;
+  border: none;
+  border-radius: 8px;
+  background: #3b6ef6;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+}
+
+.set-wide:hover {
+  background: #2f5fe0;
+}
+
+.set-wide:disabled {
+  background: rgba(15, 23, 42, 0.07);
+  color: #b6c2d2;
+  cursor: default;
+}
+
+.set-wide.warn {
+  background: #ea580c;
+}
+
+.owner-warning {
+  margin-top: 10px;
+  padding: 8px 9px;
+  border-radius: 8px;
+  background: rgba(234, 88, 12, 0.07);
 }
 
 /* 设置面板 */

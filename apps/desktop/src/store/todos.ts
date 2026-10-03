@@ -285,6 +285,31 @@ export async function editTodo(todo: Todo, edit: TodoEdit): Promise<boolean> {
   });
 }
 
+/**
+ * 把一次同步合并后的结果落盘。
+ *
+ * 只写**真正变化了的**记录：一次同步可能带回上千条，其中绝大多数本地已经有了，
+ * 全量重写会让每次同步都变成一次大事务。判断依据是 updatedAt / deletedAt 变了没。
+ */
+export async function applySynced(merged: readonly Todo[]): Promise<boolean> {
+  const before = new Map(todos.value.map((t) => [t.id, t]));
+  const changed = merged.filter((todo) => {
+    const previous = before.get(todo.id);
+    return (
+      !previous ||
+      previous.updatedAt !== todo.updatedAt ||
+      previous.deletedAt !== todo.deletedAt
+    );
+  });
+
+  if (changed.length === 0) return true;
+
+  return write("同步", async () => {
+    await requireService().putMany(changed);
+    todos.value = [...merged];
+  });
+}
+
 /** 删除（软删除，数据还在库里，只是不再出现） */
 export async function removeTodo(todo: Todo): Promise<boolean> {
   return write("删除", async () => {
@@ -338,6 +363,7 @@ export function useTodoStore() {
     moveTodoTo,
     removeTodo,
     editTodo,
+    applySynced,
     carryOverAll,
     flashNotice,
   };

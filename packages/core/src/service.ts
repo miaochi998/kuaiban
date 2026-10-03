@@ -97,6 +97,17 @@ export class TodoService {
     return next;
   }
 
+  /**
+   * 批量写入。
+   *
+   * 给同步用：一次同步可能带回几十条变化，逐条走 `repo.upsert` 会有几十次事务。
+   * **不做任何业务判断** —— 传进来什么就存什么（这些记录已经在大脑里合并过了）。
+   */
+  async putMany(items: readonly Todo[]): Promise<void> {
+    if (items.length === 0) return;
+    await this.repo.upsert([...items]);
+  }
+
   /** 跳过本次（"今天不做了，但系列继续"） */
   async skip(todo: Todo, dateKey: DateKey): Promise<Todo> {
     const next = skipOccurrence(todo, dateKey, this.clock());
