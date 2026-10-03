@@ -46,23 +46,27 @@ const isFuture = computed(
   () => props.todo.date !== null && props.todo.date > props.businessDate,
 );
 
-const canComplete = computed(() => !isNote.value && !isFuture.value);
-
 /**
- * 能不能"一键挪到某天"：
- * - 逾期的一次性待办 → 搬今天
- * - 随笔里没排期的 → 排今天（排上日期就变成待办了）
- * - **未来排期的事** → 搬到今天（提前做）
+ * 左侧**常驻**的主操作。
+ *
+ * 「完成」是用得最多的动作（用户原话："可以把'完成'常驻显示，显示在待办的左侧"），
+ * 所以它不藏起来 —— 每完成一件事都要先悬停一次太费劲。
+ * 「删」是不可逆的，仍然悬停才出现：最常用的不藏，危险的才藏。
+ *
+ * 随笔和未来的事没有"完成"（随笔是记事本；未来的事要先搬到今天）。
+ * 左侧槽位空着会显得像坏了，所以放上这一行**当下最主要的动作**：
+ * 未来的事放「搬到今天」，随笔放「排今天」。
  */
-const canCarry = computed(() => isOverdue.value || isNote.value || isFuture.value);
-
-const carryLabel = computed(() => {
-  if (isOverdue.value) return "搬今天";
-  if (isNote.value) return "排今天";
-  return "搬到今天";
+const lead = computed<{ label: string; kind: "done" | "carry" }>(() => {
+  if (isNote.value) return { label: "排今天", kind: "carry" };
+  if (isFuture.value) return { label: "搬到今天", kind: "carry" };
+  return { label: done.value ? "撤销" : "完成", kind: "done" };
 });
 
-const doneLabel = computed(() => (done.value ? "撤销" : "完成"));
+function onLead() {
+  if (lead.value.kind === "carry") emit("carry-over");
+  else emit("toggle");
+}
 
 const repeatLabel = computed(() =>
   props.todo.repeat.kind === "none" ? "" : describeRepeat(props.todo.repeat),
@@ -71,6 +75,15 @@ const repeatLabel = computed(() =>
 
 <template>
   <div class="row" :class="{ done, overdue: isOverdue, future: isFuture, noteref: isNote, flash: highlight }">
+    <!-- 常驻的主操作（见 lead 的注释） -->
+    <button
+      class="lead"
+      :class="lead.kind"
+      type="button"
+      :title="lead.kind === 'carry' ? lead.label : done ? '撤销完成' : '标记完成'"
+      @click="onLead"
+    >{{ lead.label }}</button>
+
     <!-- 点内容区打开编辑面板：改内容 / 日期 / 时间 / 重复规则 -->
     <div
       class="body"
@@ -98,21 +111,14 @@ const repeatLabel = computed(() =>
       平时藏起来是因为挂件小、视觉噪音代价高 —— 按钮占位但不显示，行不会跳动。
     -->
     <div class="actions">
+      <!-- 逾期行才需要悬停的"搬今天"：主操作已经是"完成"了 -->
       <button
-        v-if="canComplete"
-        class="act primary"
-        :class="{ undo: done }"
-        type="button"
-        :title="done ? '撤销完成' : '标记完成'"
-        @click="emit('toggle')"
-      >{{ doneLabel }}</button>
-      <button
-        v-if="canCarry"
+        v-if="isOverdue"
         class="act"
         type="button"
-        :title="carryLabel"
+        title="搬到今天"
         @click="emit('carry-over')"
-      >{{ carryLabel }}</button>
+      >搬今天</button>
       <button class="act danger" type="button" title="删除" @click="emit('remove')">删</button>
     </div>
   </div>
@@ -149,6 +155,70 @@ const repeatLabel = computed(() =>
   100% {
     background: transparent;
   }
+}
+
+/* ── 左侧常驻主操作 ──
+   常驻但**克制**：默认是浅色描边按钮，一眼可辨、不抢注意力；
+   鼠标移到这一行时才稍微提亮，指到按钮本身才变实心。 */
+.lead {
+  flex: none;
+  width: 44px;
+  padding: 3px 0;
+  margin-top: 1px;
+  border: 1px solid rgba(59, 110, 246, 0.22);
+  border-radius: 7px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #6b8fd8;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.13s, color 0.13s, border-color 0.13s;
+}
+
+.row:hover .lead {
+  border-color: rgba(59, 110, 246, 0.4);
+  background: rgba(59, 110, 246, 0.07);
+  color: #3b6ef6;
+}
+
+.lead:hover {
+  background: #3b6ef6;
+  border-color: #3b6ef6;
+  color: #fff;
+}
+
+/* 已完成的行里它是「撤销」：反向操作，语气降下来 */
+.lead.done.undo,
+.row.done .lead {
+  border-color: rgba(15, 23, 42, 0.12);
+  color: #a8b6c8;
+}
+
+/* 移到这一行的「撤销」上才提亮 */
+.row.done:hover .lead {
+  border-color: rgba(15, 23, 42, 0.2);
+  background: rgba(15, 23, 42, 0.05);
+  color: #64748b;
+}
+
+/* 搬期类的主操作（未来的事 / 随笔）用暖色，和"完成"区分开 */
+.lead.carry {
+  border-color: rgba(234, 88, 12, 0.22);
+  color: #d97706;
+}
+
+.row:hover .lead.carry {
+  border-color: rgba(234, 88, 12, 0.42);
+  background: rgba(234, 88, 12, 0.08);
+  color: #c2410c;
+}
+
+.lead.carry:hover {
+  background: #ea580c;
+  border-color: #ea580c;
+  color: #fff;
 }
 
 /* ── 内容 ── */
@@ -258,27 +328,4 @@ const repeatLabel = computed(() =>
   color: #dc2626;
 }
 
-/* 「完成」是这里最常用的动作，给它一点分量，别和「删」长得一样 */
-.act.primary {
-  background: rgba(59, 110, 246, 0.12);
-  color: #3b6ef6;
-  font-weight: 600;
-}
-
-.act.primary:hover {
-  background: #3b6ef6;
-  color: #fff;
-}
-
-/* 已完成的行里它是「撤销」，语气要弱下来 */
-.act.primary.undo {
-  background: rgba(15, 23, 42, 0.06);
-  color: #94a3b8;
-  font-weight: 400;
-}
-
-.act.primary.undo:hover {
-  background: rgba(15, 23, 42, 0.12);
-  color: #475569;
-}
 </style>
