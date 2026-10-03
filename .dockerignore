@@ -1,0 +1,14 @@
+**/node_modules
+**/target
+**/dist
+**/.git
+**/test-results
+**/playwright-report
+docs
+e2e
+*.db
+*.db-shm
+*.db-wal
+.keys
+.env
+.env.local
