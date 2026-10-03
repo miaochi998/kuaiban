@@ -328,6 +328,14 @@ e2e 新增 6 个日历用例（原"日历不该能加"的用例已改写），�
 【已确认为疏漏：在线更新未实现】查证 Cargo.toml / tauri.conf.json 里**没有任何 updater 配置**。它在最早的功能清单里（"自动更新"），但前几轮把精力放在服务端、同步、管理后台，没有动。方案：tauri-plugin-updater + 一对签名密钥（私钥保管、公钥打进客户端以防假安装包）+ 静态更新清单与安装包。**可在本地全部测完**：本地起静态服务器放清单与安装包，版本号 0.1.0→0.1.1 即可看到应用自更新，无需真实部署。已向用户提出下一步做它，等待答复。
 
 【管理后台本地测试环境（用户手动测试用）】服务端以后台常驻任务运行，`KUAIBAN_DB="$HOME/Library/Application Support/com.kuaiban.server/kuaiban.db"` PORT=8787，已用 `open http://127.0.0.1:8787/` 在用户浏览器打开。测试账号：admin/admin12345（管理员）；zhang、li、wang、chen 均为 initpass123（普通用户）。可用 `pnpm dev:server` 或直接 `node --experimental-sqlite apps/server/src/main.ts` 重启。
+- [2026-10-04 01:05] [工作记录] 在线更新完成并本地端到端验证（c4587ca） — commit c4587ca。用户指出此前提过的"在线更新"漏做了——确实漏了，本轮补齐并**端到端验证通过**。
+
+【机制】tauri-plugin-updater + tauri-plugin-process（重启）。策略：启动 15 秒后查一次、之后每 6 小时；**发现有新版直接后台下载**（不打扰）；装好后才在设置面板「关于」显示"已就绪"；**重启必须用户点** —— 刻意不弹"要不要更新"的模态框（挂件贴在屏幕边、用户可能在全屏应用里）。开发模式（tauri dev 跑 target/debug）不支持自更新，点检查会给一句人话而非英文报错。
+【签名】minisign 私钥签名、公钥烧进客户端（tauri.conf.json 的 plugins.updater.pubkey），验签不过一律不装。**私钥在 ~/.tauri/kuaiban-updater.key（仓库外），丢了就再也发不了更新**，需单独备份。bundle.createUpdaterArtifacts=true 才会产出更新包与 .sig。
+【本地测试环境（无需部署）】scripts/update-server.mjs（扫描 bundle 目录、自动生成带签名的 latest.json、HTTP 发出）+ apps/desktop/src-tauri/tauri.local-update.conf.json（覆盖 endpoints 到 127.0.0.1:8899）+ docs/在线更新-本地测试.md（完整步骤）。
+【实测证据】跑 0.1.0 的应用，日志显示"清单已生成：0.1.1"→"发送 KuaiBan.app.tar.gz（3.1 MB）"，即应用自己完成了检查与下载。
+【环境约束 / 坑】1) 打签名的环境变量是 `TAURI_SIGNING_PRIVATE_KEY`（直接给路径），**不是** `TAURI_SIGNING_PRIVATE_KEY_PATH` —— 用错时产物照样生成、只是没 .sig，到签名那步才报错。2) **Tauri 拒绝非 https 的更新地址**（"must use a secure protocol like https"，安全设计）；本地测试必须加 `"dangerousInsecureTransportProtocol": true`，**该开关只允许出现在 tauri.local-update.conf.json，正式配置绝不可有**。3) macOS 应用的可执行文件名为 Cargo 的 bin 名（desktop），不是 productName。
+【状态】版本号目前停在 0.1.1（验证更新时改的）。全仓 535 个测试。部署仍未开始——用户要求本地全跑通再谈部署。
 
 ## 经验教训 Lessons Learned
 
@@ -450,3 +458,8 @@ unsafe { let w = ptr as *mut AnyObject; let _: () = msg_send![w, setAcceptsMouse
 **教训：常驻的动作按钮容易被误读为状态。** 一个"动作"该不该常驻，不只看使用频率，还要看它会不会被当成状态显示。
 
 【e2e 断言经验】`opacity: 0` 的元素 Playwright 仍算 visible，不能断言 `toBeHidden()`；要断言 `toHaveCSS("opacity","0")`。且 opacity 不继承，查容器而非子元素。
+- [2026-10-04 01:05] [经验教训] Tauri 在线更新的四个硬约束与坑 — 1) **Tauri 更新地址必须 https**：配 http 端点会直接 panic（`The configured updater endpoint must use a secure protocol like https`）。本地/内网测试加 `"dangerousInsecureTransportProtocol": true`，且**该开关只能放在本地测试用配置里**（如 tauri.local-update.conf.json），正式配置绝不可有。
+2) **打更新签名用 `TAURI_SIGNING_PRIVATE_KEY`**（值可以是路径），不是 `TAURI_SIGNING_PRIVATE_KEY_PATH`。用错时打包会成功产出 bundle、只是没有 .sig，**到签名那一步才报错**——所以打完包一定要 `ls *.sig` 确认。
+3) **验证"应用自更新"不必部署**：打两个版本（旧版另存到 /tmp 运行，新版进 bundle 目录），起一个本地静态服务器发带签名的 latest.json，跑旧版即可看到它检查+下载。判断是否成功看**服务器日志有没有收到请求**，比截图可靠。
+4) 本地测更新时，**两个版本的打包都必须带上本地 endpoint 配置**，否则旧版会去连生产地址、整个验证白做。
+5) macOS 上 .app 的可执行文件名是 **Cargo 的 bin 名**（本项目是 `desktop`），不是 productName（KuaiBan）；直接跑二进制看 stderr 是排查"应用起不来"最快的手段。
