@@ -14,6 +14,16 @@
  *            ↓ 服务端读 Release（本文件）
  *       下载页 + 自动更新清单，同时生效
  *
+ * ## 国内网络的关键约束（服务器运维实测）
+ *
+ * `github.com` 在国内**不可达**（超时），但 **`api.github.com` 可达**。
+ * 所以下载资源**必须走 API 通道**：
+ *
+ *     GET https://api.github.com/repos/<owner>/<repo>/releases/assets/<id>
+ *     Accept: application/octet-stream
+ *
+ * 用 `browser_download_url`（`github.com/.../releases/download/...`）必然超时。
+ *
  * ## 只下载签名文件，不搬安装包
  *
  * 安装包本体（3～6MB）留在 GitHub，下载地址直接指向它 —— 服务端不当中转站，
@@ -30,8 +40,17 @@ const DESKTOP_ASSETS: { match: RegExp; platform: "macos" | "windows" | "android"
 
 export interface GithubAsset {
   name: string;
-  /** 浏览器下载地址 */
-  url: string;
+  /**
+   * **API 资源地址**（`api.github.com/repos/.../releases/assets/<id>`）。
+   *
+   * ⚠️ 刻意不用 `browser_download_url`：那个是 `github.com/...` 的直链，
+   * **在国内网络下会超时**（实测 `github.com` 不可达，`api.github.com` 可达）。
+   * 走 API 地址 + `Accept: application/octet-stream` 才能真的把文件拿下来。
+   * （这条是服务器运维实测反馈的，不是推测。）
+   */
+  apiUrl: string;
+  /** 浏览器下载地址。**只用于本地开发/境外网络**，国内不要用 */
+  browserUrl: string;
   size: number;
 }
 
@@ -88,7 +107,7 @@ export async function fetchLatestRelease(opts: {
       tag_name?: string;
       published_at?: string;
       body?: string;
-      assets?: { name: string; browser_download_url: string; size: number }[];
+      assets?: { name: string; url: string; browser_download_url: string; size: number }[];
     };
 
     // tag 形如 v0.1.2 —— 版本号不带 v
@@ -101,7 +120,8 @@ export async function fetchLatestRelease(opts: {
       notes: json.body ?? "",
       assets: (json.assets ?? []).map((a) => ({
         name: a.name,
-        url: a.browser_download_url,
+        apiUrl: a.url, // api.github.com/…/releases/assets/<id>
+        browserUrl: a.browser_download_url,
         size: a.size,
       })),
     };

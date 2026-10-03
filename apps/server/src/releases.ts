@@ -148,7 +148,8 @@ export class ReleaseStore {
 
     // 记下回源地址（同事那边下不动的 GitHub 地址只留给自己用）
     this.assetSources.clear();
-    for (const asset of release.assets) this.assetSources.set(asset.name, asset.url);
+    // 记的是 **API 地址**：github.com 直链在国内超时（服务器运维实测）
+    for (const asset of release.assets) this.assetSources.set(asset.name, asset.apiUrl);
 
     for (const asset of release.assets) {
       const platform = platformOf(asset.name);
@@ -276,9 +277,13 @@ export class ReleaseStore {
     }
 
     try {
-      const res = await fetch(asset.url, {
-        headers: this.githubToken ? { authorization: `Bearer ${this.githubToken}` } : {},
-        signal: AbortSignal.timeout(8_000),
+      const res = await fetch(asset.apiUrl, {
+        headers: {
+          accept: "application/octet-stream",
+          "user-agent": "kuaiban-server",
+          ...(this.githubToken ? { authorization: `Bearer ${this.githubToken}` } : {}),
+        },
+        signal: AbortSignal.timeout(15_000),
       });
       if (!res.ok) return null;
       const text = (await res.text()).trim();
@@ -393,7 +398,12 @@ export class ReleaseStore {
     const partial = `${target}.partial`;
 
     const res = await fetch(source, {
-      headers: this.githubToken ? { authorization: `Bearer ${this.githubToken}` } : {},
+      headers: {
+        // 这个头是必须的：不加的话 API 返回的是 JSON 元数据，不是文件本体
+        accept: "application/octet-stream",
+        "user-agent": "kuaiban-server",
+        ...(this.githubToken ? { authorization: `Bearer ${this.githubToken}` } : {}),
+      },
       signal: AbortSignal.timeout(120_000), // 安装包几 MB，给足时间
     });
     if (!res.ok || !res.body) throw new Error(`回源失败：${res.status}`);

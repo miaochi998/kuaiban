@@ -137,16 +137,19 @@ describe("下载地址必须指向本站，不能是 GitHub", () => {
             assets: [
               {
                 name: "KuaiBan_0.1.2_aarch64.dmg",
+                url: "https://api.github.com/repos/me/kuaiban/releases/assets/1",
                 browser_download_url: "https://github.com/me/kuaiban/releases/download/v0.1.2/x.dmg",
                 size: 3_000_000,
               },
               {
                 name: "KuaiBan_0.1.2_aarch64.app.tar.gz",
+                url: "https://api.github.com/repos/me/kuaiban/releases/assets/2",
                 browser_download_url: "https://github.com/me/kuaiban/releases/download/v0.1.2/x.app.tar.gz",
                 size: 3_100_000,
               },
               {
                 name: "KuaiBan_0.1.2_aarch64.app.tar.gz.sig",
+                url: "https://api.github.com/repos/me/kuaiban/releases/assets/3",
                 browser_download_url: "https://github.com/me/kuaiban/releases/download/v0.1.2/x.sig",
                 size: 424,
               },
