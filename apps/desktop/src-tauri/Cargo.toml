@@ -44,6 +44,17 @@ serde_json = "1"
 # 现在：HWND 一律通过 raw-window-handle 取（见 lib.rs::hwnd_of），与 crate 版本无关；
 # windows 版本对齐到 0.62，只保留一份。
 # ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# macOS 专属：修「不点一下就不响应悬停」
+#
+# NSWindow 的 acceptsMouseMovedEvents 默认是 false，而 AppKit 只在窗口是
+# key window 时才无条件投递 mouseMoved。挂件是辅助窗口、永远不是 key，
+# 于是 WebView 收不到鼠标移动 → CSS :hover 一直不更新。
+# objc2 本来就在 tauri 的依赖树里（0.6.4），加它不增加编译成本。
+# ─────────────────────────────────────────────────────────────
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",

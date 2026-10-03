@@ -422,6 +422,47 @@ fn make_non_activating(_window: &WebviewWindow) {
     // macOS 上等价能力通过 ActivationPolicy::Accessory 实现（在 setup 里设置）
 }
 
+/// macOS：让窗口在**不是 key window** 时也能收到 `mouseMoved` 事件。
+///
+/// ## 为什么必须做（这是用户反馈的真实 bug）
+///
+/// `NSWindow.acceptsMouseMovedEvents` **默认是 false**，而 AppKit 只在窗口是
+/// key window 时才无条件投递 `mouseMoved`。我们的挂件是辅助窗口
+/// （`ActivationPolicy::Accessory`），**永远不是 key** —— 于是 WebView 收不到
+/// 任何鼠标移动事件，CSS `:hover` 一直不更新：
+///
+/// - 首次展开面板后，鼠标移到待办上**不出现**「完成 / 删」
+/// - 随便点一下（窗口因此变成 key），之后再悬停就正常了
+///
+/// 打开这个开关后，非 key 窗口也能收到 mouseMoved，悬停立刻可用，
+/// 而且**不需要**把窗口变成 key —— 也就不会抢焦点，正好符合"不打断其他窗口"这条铁律。
+#[cfg(target_os = "macos")]
+fn enable_mouse_moved_events(window: &WebviewWindow) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    let Ok(ptr) = window.ns_window() else {
+        eprintln!("[widget] 拿不到 NSWindow，无法开启 acceptsMouseMovedEvents");
+        return;
+    };
+    if ptr.is_null() {
+        return;
+    }
+
+    // SAFETY: ns_window() 返回有效的 NSWindow 指针；本函数在 setup（主线程）里调用，
+    // 且 AppKit 的窗口属性只能在主线程访问。
+    unsafe {
+        let ns_window = ptr as *mut AnyObject;
+        let _: () = msg_send![ns_window, setAcceptsMouseMovedEvents: true];
+    }
+    println!("[widget] 已开启 acceptsMouseMovedEvents（非 key 窗口也能收到鼠标移动 → 悬停可用）");
+}
+
+#[cfg(not(target_os = "macos"))]
+fn enable_mouse_moved_events(_window: &WebviewWindow) {
+    // 仅 macOS 需要：Windows 的窗口消息模型不存在这个问题。
+}
+
 /// 记录「用户正在挂件里输入」这一状态，并（仅 Windows）相应切换窗口的激活策略。
 ///
 /// ⚠️ 这个标志**所有平台都要正确维护**，不能只在 Windows 上记：
@@ -663,6 +704,8 @@ pub fn run() {
             if let Some(window) = app.get_webview_window(WIDGET_LABEL) {
                 apply_layout(&window);
                 make_non_activating(&window);
+                // 不点一下就不响应悬停的修复，见 enable_mouse_moved_events
+                enable_mouse_moved_events(&window);
                 // 初始为收起状态：鼠标穿透
                 let _ = window.set_ignore_cursor_events(true);
                 let _ = window.show();
