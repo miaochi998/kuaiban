@@ -385,3 +385,44 @@ describe("起始日对齐重复规则", () => {
     expect(edited.date).toBe("2026-10-05");
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// 随笔不参与完成
+//
+// 用户原话：「随笔就像记事本一样，只是用来记录自己的想法和灵感的，
+// 不需要标记完成，只有把随笔排上时间后才会将随笔更改为待办」。
+//
+// 这条规则守在大脑里而不是界面里：将来 web / 手机 / 服务端都会继承它，
+// 不至于某个端偷偷允许"完成一条随笔"。
+// ─────────────────────────────────────────────────────────────
+
+describe("随笔不参与完成", () => {
+  it("对未排期的随笔标记完成 → 原样不动", async () => {
+    const { service, repo } = make();
+    const note = await service.add({ title: "一个灵感", date: null });
+
+    const after = await service.setDone(note, MON, true);
+
+    expect(after).toEqual(note);
+    expect(after.status).toBe("pending");
+    expect((await repo.list())[0]!.status).toBe("pending");
+  });
+
+  it("反复调用也不会把它变脏", async () => {
+    const { service } = make();
+    const note = await service.add({ title: "灵感", date: null });
+    expect(await service.setDone(note, MON, true)).toEqual(note);
+    expect(await service.setDone(note, MON, false)).toEqual(note);
+  });
+
+  it("排上日期之后它就变成待办，这时可以完成", async () => {
+    const { service } = make();
+    const note = await service.add({ title: "灵感", date: null });
+
+    const scheduled = await service.applyEdit(note, { date: MON });
+    expect(scheduled.date).toBe(MON);
+
+    const after = await service.setDone(scheduled, MON, true);
+    expect(after.status).toBe("done");
+  });
+});

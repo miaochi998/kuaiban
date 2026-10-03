@@ -77,8 +77,18 @@ export class TodoService {
    *
    * 注意参数里带 `dateKey` 而不是布尔字段：重复任务的"完成"是**按天**的，
    * 今天勾掉不代表明天也做完了（业务逻辑文档 §6.3）。
+   *
+   * **随笔（未排期）不参与完成** —— 它是记事本，不是待办：
+   * 记录想法和灵感不需要"做完"这个状态，硬给它加一个完成动作只会让人困惑
+   * （"我把这条灵感完成了"是什么意思？）。
+   * 只有**排上日期之后**它才成为待办，那时才能勾完成。
+   *
+   * 这条规则放在大脑而不是界面里：将来 web / 手机 / 服务端都会继承它，
+   * 不至于某个端偷偷允许"完成一条随笔"。
    */
   async setDone(todo: Todo, dateKey: DateKey, done: boolean): Promise<Todo> {
+    if (todo.date === null) return todo;
+
     const now = this.clock();
     const next = done
       ? completeOccurrence(todo, dateKey, now)

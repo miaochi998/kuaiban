@@ -41,12 +41,13 @@ function fireLabel(item: QueuedReminder): string {
 
     <ul class="rc-list">
       <li v-for="item in items" :key="item.key" class="rc-item">
+        <!-- 和待办行保持一致：直接写「完成」，不用需要猜的圆圈符号 -->
         <button
-          class="rc-check"
+          class="rc-done"
           type="button"
           title="标记完成"
           @click="emit('complete', item)"
-        ></button>
+        >完成</button>
 
         <div class="rc-body">
           <div class="rc-text">{{ item.todo.title }}</div>
@@ -148,21 +149,23 @@ function fireLabel(item: QueuedReminder): string {
   padding: 4px 0;
 }
 
-.rc-check {
-  position: relative;
-  width: 14px;
-  height: 14px;
+.rc-done {
   flex: none;
-  padding: 0;
-  border: 1.5px solid #fdba74;
-  border-radius: 5px;
-  background: #fff;
+  padding: 3px 8px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(234, 88, 12, 0.16);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  color: #c2410c;
   cursor: pointer;
+  white-space: nowrap;
 }
 
-.rc-check:hover {
-  border-color: #f97316;
-  background: rgba(249, 115, 22, 0.1);
+.rc-done:hover {
+  background: #ea580c;
+  color: #fff;
 }
 
 .rc-body {

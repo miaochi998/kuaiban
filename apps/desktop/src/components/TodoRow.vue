@@ -12,7 +12,7 @@ const props = defineProps<{
   overdueDays?: number;
   /** 是否拖到需要提醒的程度 */
   needsAttention?: boolean;
-  /** 刚添加的那一条 —— 闪一下，让用户确信这次操作生效了 */
+  /** 刚添加的那一条 —— 闪一下，让用户确信操作生效了 */
   highlight?: boolean;
 }>();
 
@@ -23,65 +23,54 @@ const emit = defineEmits<{
   (e: "edit"): void;
 }>();
 
-const done = computed(() => isOccurrenceDone(props.todo, props.dateKey));
+/**
+ * 随笔（未排期）不是待办，**没有"完成"这个概念**。
+ *
+ * 它就是个记事本，用来记想法和灵感 —— "我把这条灵感完成了"没有意义。
+ * 只有排上日期之后它才变成待办，那时才能勾完成。
+ * （这条规则在大脑的 `TodoService.setDone` 里也守了一遍，各端都跑不掉。）
+ */
+const isNote = computed(() => props.todo.date === null);
+
+const done = computed(() => !isNote.value && isOccurrenceDone(props.todo, props.dateKey));
 const isOverdue = computed(() => (props.overdueDays ?? 0) > 0);
 
 /**
  * 是不是"排在未来"的事。
  *
- * 勾选完成的含义是**"我今天把它做掉了"**。把明天（或更远）的事直接勾掉，
+ * 完成的含义是**"我今天把它做掉了"**。把明天（或更远）的事直接勾掉，
  * "完成时间"和"计划日期"就打架了 —— 而真实动作其实是"我提前做了"，
- * 对应的操作应该是**先搬到今天、再勾完成**。所以未来的事不允许直接勾。
+ * 对应的操作应该是**先搬到今天、再完成**。所以未来的事不给"完成"按钮。
  */
 const isFuture = computed(
   () => props.todo.date !== null && props.todo.date > props.businessDate,
 );
 
-const completable = computed(() => !isFuture.value);
+const canComplete = computed(() => !isNote.value && !isFuture.value);
 
 /**
  * 能不能"一键挪到某天"：
  * - 逾期的一次性待办 → 搬今天
- * - 随笔里没排期的 → 排今天（原来只能看不能动，记进去就"烂"在那儿了）
+ * - 随笔里没排期的 → 排今天（排上日期就变成待办了）
  * - **未来排期的事** → 搬到今天（提前做）
  */
-const canCarry = computed(
-  () => isOverdue.value || props.todo.date === null || isFuture.value,
-);
+const canCarry = computed(() => isOverdue.value || isNote.value || isFuture.value);
 
 const carryLabel = computed(() => {
   if (isOverdue.value) return "搬今天";
-  if (props.todo.date === null) return "排今天";
+  if (isNote.value) return "排今天";
   return "搬到今天";
 });
+
+const doneLabel = computed(() => (done.value ? "撤销" : "完成"));
 
 const repeatLabel = computed(() =>
   props.todo.repeat.kind === "none" ? "" : describeRepeat(props.todo.repeat),
 );
-
-const checkTitle = computed(() => {
-  if (!completable.value) return "这是以后的事：先「搬到今天」，再标记完成";
-  return done.value ? "取消完成" : "标记完成";
-});
 </script>
 
 <template>
-  <div class="row" :class="{ done, overdue: isOverdue, future: isFuture, flash: highlight }">
-    <!--
-      完成勾选做成**圆圈**而不是方框：方框看起来像"多选"，而这里表达的是
-      "这件事做完了"。圆圈 + 打勾是待办类产品的通用完成语义
-      （用户反馈过方框让人困惑）。
-    -->
-    <button
-      class="check"
-      :class="{ on: done, blocked: !completable }"
-      type="button"
-      :disabled="!completable"
-      :aria-label="checkTitle"
-      :title="checkTitle"
-      @click="emit('toggle')"
-    ></button>
-
+  <div class="row" :class="{ done, overdue: isOverdue, future: isFuture, noteref: isNote, flash: highlight }">
     <!-- 点内容区打开编辑面板：改内容 / 日期 / 时间 / 重复规则 -->
     <div
       class="body"
@@ -102,7 +91,21 @@ const checkTitle = computed(() => {
       </div>
     </div>
 
+    <!--
+      操作按钮和「删」一样，**鼠标悬停才出现**。
+      曾经用一个圆形勾选框表示完成，但那个符号要猜（用户反馈"为什么是复选框"）；
+      直接写「完成」两个字，不用解释。
+      平时藏起来是因为挂件小、视觉噪音代价高 —— 按钮占位但不显示，行不会跳动。
+    -->
     <div class="actions">
+      <button
+        v-if="canComplete"
+        class="act primary"
+        :class="{ undo: done }"
+        type="button"
+        :title="done ? '撤销完成' : '标记完成'"
+        @click="emit('toggle')"
+      >{{ doneLabel }}</button>
       <button
         v-if="canCarry"
         class="act"
@@ -148,50 +151,6 @@ const checkTitle = computed(() => {
   }
 }
 
-/* ── 完成勾选：圆圈 ── */
-.check {
-  position: relative;
-  width: 16px;
-  height: 16px;
-  margin-top: 1px;
-  flex: none;
-  padding: 0;
-  border: 1.5px solid #cbd5e1;
-  border-radius: 50%;
-  background: transparent;
-  cursor: pointer;
-  transition: border-color 0.13s, background 0.13s;
-}
-
-.check:hover:not(:disabled) {
-  border-color: #3b6ef6;
-  background: rgba(59, 110, 246, 0.08);
-}
-
-.check.on {
-  background: #3b6ef6;
-  border-color: #3b6ef6;
-}
-
-.check.on::after {
-  content: "";
-  position: absolute;
-  left: 4.5px;
-  top: 1.5px;
-  width: 6px;
-  height: 3px;
-  border-left: 1.5px solid #fff;
-  border-bottom: 1.5px solid #fff;
-  transform: rotate(-45deg);
-}
-
-/* 以后的事不能勾：虚线 + 不可点，一眼看出"不是坏了，是现在不该勾" */
-.check.blocked {
-  border-style: dashed;
-  border-color: #e2e8f0;
-  cursor: default;
-}
-
 /* ── 内容 ── */
 .body {
   flex: 1;
@@ -210,6 +169,11 @@ const checkTitle = computed(() => {
   line-height: 1.36;
   color: #1e293b;
   word-break: break-word;
+}
+
+/* 随笔：不是待办，所以不用"待办"的视觉语言 */
+.row.noteref .title {
+  color: #475569;
 }
 
 .row.done .title {
@@ -257,15 +221,18 @@ const checkTitle = computed(() => {
    挂件本来就小，视觉噪音的代价很高。 */
 .actions {
   display: flex;
-  gap: 3px;
+  gap: 4px;
   flex: none;
   opacity: 0;
+  /* 藏起来的时候必须同时禁用点击 —— 否则会点到一个看不见的按钮上 */
+  pointer-events: none;
   transition: opacity 0.13s;
 }
 
 .row:hover .actions,
 .row:focus-within .actions {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .act {
@@ -289,5 +256,29 @@ const checkTitle = computed(() => {
 .act.danger:hover {
   background: rgba(220, 38, 38, 0.1);
   color: #dc2626;
+}
+
+/* 「完成」是这里最常用的动作，给它一点分量，别和「删」长得一样 */
+.act.primary {
+  background: rgba(59, 110, 246, 0.12);
+  color: #3b6ef6;
+  font-weight: 600;
+}
+
+.act.primary:hover {
+  background: #3b6ef6;
+  color: #fff;
+}
+
+/* 已完成的行里它是「撤销」，语气要弱下来 */
+.act.primary.undo {
+  background: rgba(15, 23, 42, 0.06);
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+.act.primary.undo:hover {
+  background: rgba(15, 23, 42, 0.12);
+  color: #475569;
 }
 </style>

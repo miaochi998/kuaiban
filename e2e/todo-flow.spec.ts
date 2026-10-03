@@ -240,7 +240,9 @@ test("勾选后进入「已完成」折叠区，角标减少", async ({ page }) 
   await page.press(".add", "Enter");
   await expect(page.locator(".head-count b")).toHaveText("1");
 
-  await page.locator(".row", { hasText: "打卡" }).locator(".check").click();
+  const doneRow = page.locator(".row", { hasText: "打卡" });
+  await doneRow.hover();
+  await doneRow.locator(".act.primary").click();
 
   await expect(page.locator(".head-count b")).toHaveText("0");
   await expect(page.locator(".row", { hasText: "打卡" })).toHaveCount(0);
@@ -253,10 +255,15 @@ test("勾选后进入「已完成」折叠区，角标减少", async ({ page }) 
 test("取消勾选能回到今天清单", async ({ page }) => {
   await page.fill(".add", "打卡");
   await page.press(".add", "Enter");
-  await page.locator(".row .check").click();
+  const only = page.locator(".row").first();
+  await only.hover();
+  await only.locator(".act.primary").click();
   await page.locator(".group-title.clickable").click();
 
-  await page.locator(".row.done .check").click();
+  const undone = page.locator(".row.done").first();
+  await undone.hover();
+  // 已完成的行里这个按钮变成「撤销」
+  await undone.locator(".act.primary", { hasText: "撤销" }).click();
   await expect(page.locator(".head-count b")).toHaveText("1");
 });
 
@@ -457,7 +464,7 @@ test("提醒卡片里可以直接标记完成", async ({ page }) => {
   await addPastDue(page, "要做的事");
   await expect(page.locator(".reminder-card")).toBeVisible();
 
-  await page.locator(".rc-check").first().click();
+  await page.locator(".rc-done").first().click();
   await expect(page.locator(".reminder-card")).toHaveCount(0);
   // 窄条也恢复常态
   await expect(page.locator(".strip")).not.toHaveClass(/alerting/);
@@ -734,10 +741,11 @@ test("明天的事不能直接勾完成，只能「搬到今天」", async ({ pa
   await page.press(".add", "Enter");
 
   const row = page.locator(".row", { hasText: "明天的事" });
-  await expect(row.locator(".check")).toBeDisabled();
   await expect(row.locator(".future-tag")).toContainText("以后的事");
 
   await row.hover();
+  // 未来的事**没有**「完成」按钮，只能先搬
+  await expect(row.locator(".act.primary")).toHaveCount(0);
   await expect(row.locator(".act", { hasText: "搬到今天" })).toBeVisible();
 });
 
@@ -752,8 +760,10 @@ test("搬到今天之后就可以勾完成了", async ({ page }) => {
 
   await page.locator(".tab", { hasText: "今天" }).click();
   const todayRow = page.locator(".row", { hasText: "提前做" });
-  await expect(todayRow.locator(".check")).toBeEnabled();
-  await todayRow.locator(".check").click();
+  await todayRow.hover();
+  // 搬到今天之后，「完成」按钮就出现了
+  await expect(todayRow.locator(".act.primary")).toHaveText("完成");
+  await todayRow.locator(".act.primary").click();
   await expect(todayRow).toHaveCount(0);
 });
 
@@ -768,11 +778,98 @@ test("日历里未来的日期同样不能勾完成", async ({ page }) => {
   await page.press(".add", "Enter");
 
   const row = page.locator(".row", { hasText: "20号的事" });
-  await expect(row.locator(".check")).toBeDisabled();
+  await row.hover();
+  await expect(row.locator(".act.primary")).toHaveCount(0);
+  await expect(row.locator(".act", { hasText: "搬到今天" })).toBeVisible();
 });
 
-test("今天的事照常可以勾完成", async ({ page }) => {
+test("今天的事照常可以完成", async ({ page }) => {
   await page.fill(".add", "今天的事");
   await page.press(".add", "Enter");
-  await expect(page.locator(".row", { hasText: "今天的事" }).locator(".check")).toBeEnabled();
+
+  const row = page.locator(".row", { hasText: "今天的事" });
+  await row.hover();
+  await expect(row.locator(".act.primary")).toHaveText("完成");
+});
+
+// ─────────────────────────────────────────────────────────────
+// 随笔不是待办：没有「完成」
+//
+// 用户原话：「随笔就像记事本一样，只是用来记录自己的想法和灵感的，
+// 不需要标记完成，只有把随笔排上时间后才会将随笔更改为待办」。
+// ─────────────────────────────────────────────────────────────
+
+test("随笔里没有「完成」按钮 —— 它只是记事本", async ({ page }) => {
+  const errors = collectErrors(page);
+  await page.locator(".tab", { hasText: "随笔" }).click();
+  await page.fill(".add", "一个灵感");
+  await page.press(".add", "Enter");
+
+  const row = page.locator(".row", { hasText: "一个灵感" });
+  await row.hover();
+
+  await expect(row.locator(".act.primary")).toHaveCount(0); // 没有「完成」
+  await expect(row.locator(".act", { hasText: "排今天" })).toBeVisible();
+  await expect(row.locator(".act.danger")).toBeVisible(); // 但可以删
+  expect(errors).toEqual([]);
+});
+
+test("随笔排上日期之后就变成待办，这时才有「完成」", async ({ page }) => {
+  await page.locator(".tab", { hasText: "随笔" }).click();
+  await page.fill(".add", "一个灵感");
+  await page.press(".add", "Enter");
+
+  const row = page.locator(".row", { hasText: "一个灵感" });
+  await row.hover();
+  await row.locator(".act", { hasText: "排今天" }).click();
+
+  await page.locator(".tab", { hasText: "今天" }).click();
+  const scheduled = page.locator(".row", { hasText: "一个灵感" });
+  await scheduled.hover();
+  await expect(scheduled.locator(".act.primary")).toHaveText("完成");
+});
+
+// ─────────────────────────────────────────────────────────────
+// 「完成」和「删」一样是悬停才出现的小按钮
+//
+// 用户原话：「建议将完成了使用圆圈打钩的逻辑修改为与删除一样的效果：
+// 当鼠标悬停时显示"完成"和"删"两个小按钮，这样最能直接明白是什么意思」。
+// ─────────────────────────────────────────────────────────────
+
+test("「完成」与「删」一样，不悬停时不显示", async ({ page }) => {
+  await page.fill(".add", "悬停看看");
+  await page.press(".add", "Enter");
+
+  const row = page.locator(".row", { hasText: "悬停看看" });
+  await expect(row.locator(".actions")).toHaveCSS("opacity", "0");
+
+  await row.hover();
+  await expect(row.locator(".act.primary", { hasText: "完成" })).toBeVisible();
+  await expect(row.locator(".act.danger", { hasText: "删" })).toBeVisible();
+});
+
+test("藏起来的时候点不到（不会误点看不见的「删」）", async ({ page }) => {
+  await page.fill(".add", "别误删");
+  await page.press(".add", "Enter");
+
+  const row = page.locator(".row", { hasText: "别误删" });
+  // 不悬停 → 按钮不可点击（pointer-events: none）
+  await expect(row.locator(".actions")).toHaveCSS("pointer-events", "none");
+
+  await row.hover();
+  await expect(row.locator(".actions")).toHaveCSS("pointer-events", "auto");
+});
+
+test("已完成的行里按钮变成「撤销」", async ({ page }) => {
+  await page.fill(".add", "做完的事");
+  await page.press(".add", "Enter");
+
+  const row = page.locator(".row", { hasText: "做完的事" });
+  await row.hover();
+  await row.locator(".act.primary").click();
+
+  await page.locator(".group-title", { hasText: "已完成" }).click();
+  const doneRow = page.locator(".row.done", { hasText: "做完的事" });
+  await doneRow.hover();
+  await expect(doneRow.locator(".act.primary")).toHaveText("撤销");
 });
