@@ -2,8 +2,9 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { fromDateKey, monthGrid, normalizeTimeOfDay, todosOnDate, type DateKey, type Todo, type TimeOfDay } from "@kuaiban/core";
+import { fromDateKey, monthGrid, todosOnDate, type DateKey, type Todo } from "@kuaiban/core";
 import TodoRow from "./components/TodoRow.vue";
+import { parseDraft } from "./lib/parse-draft";
 import { useTodoStore, type PanelTab } from "./store/todos";
 
 // ─────────────────────────────────────────────────────────────
@@ -173,15 +174,18 @@ const tomorrowLabel = computed(() => {
 const placeholder = computed(() => {
   switch (activeTab.value) {
     case "tomorrow":
-      return "＋ 添加明天的事，回车即存…";
+      return "添加明天的事，如 10:00 客户拜访";
     case "inbox":
-      return "＋ 随手记一条，之后可以排期…";
+      return "随手记一条，之后可以排期…";
     case "calendar":
       return "";
     default:
-      return "＋ 添加今天的事，回车即存…";
+      return "添加今天的事，如 9:30 交周报";
   }
 });
+
+/** 输入框里有内容才允许提交（按钮的禁用态据此决定） */
+const canSubmit = computed(() => draft.value.trim().length > 0);
 
 const emptyHint = computed(() => {
   switch (activeTab.value) {
@@ -196,16 +200,8 @@ const emptyHint = computed(() => {
 
 /**
  * 极速捕获：支持在输入内容前面直接写时间，例如 `9:30 交周报`。
- * 这是"随手记"体验的关键 —— 不用点任何地方选时间。
+ * 解析逻辑抽在 `./lib/parse-draft.ts`（纯函数、有单测覆盖各种写法与误判边界）。
  */
-function parseDraft(raw: string): { title: string; time: TimeOfDay | null } {
-  const m = /^(\d{1,2}[:：]\d{1,2})\s+(.+)$/.exec(raw.trim());
-  if (m && m[1] && m[2]) {
-    const time = normalizeTimeOfDay(m[1].replace("：", ":"));
-    if (time) return { title: m[2].trim(), time };
-  }
-  return { title: raw.trim(), time: null };
-}
 
 async function submitDraft() {
   const raw = draft.value.trim();
@@ -415,16 +411,33 @@ function shiftMonth(delta: number) {
       </div>
 
       <footer v-if="activeTab !== 'calendar'" class="foot">
-        <input
-          ref="draftEl"
-          v-model="draft"
-          class="add"
-          type="text"
-          :placeholder="placeholder"
-          @mousedown="grabKeyboard"
-          @blur="onInputBlur"
-          @keydown.enter="submitDraft"
-        />
+        <div class="add-row">
+          <input
+            ref="draftEl"
+            v-model="draft"
+            class="add"
+            type="text"
+            :placeholder="placeholder"
+            @mousedown="grabKeyboard"
+            @blur="onInputBlur"
+            @keydown.enter="submitDraft"
+          />
+          <!--
+            发送按钮。两种提交方式都保留：回车（老手更快）与点按钮（新手直观）。
+
+            `@mousedown.prevent` 是必须的：不拦住的话点按钮会让输入框先 blur，
+            于是 `onInputBlur` 会交还键盘焦点并开始收起倒计时 —— 用户想连记几条时，
+            面板会在半路收走。prevent 之后焦点留在输入框，可以接着打第二条。
+          -->
+          <button
+            class="send"
+            type="button"
+            :disabled="!canSubmit"
+            title="添加（也可以直接按回车）"
+            @mousedown.prevent
+            @click="submitDraft"
+          >添加</button>
+        </div>
       </footer>
     </section>
   </div>
@@ -863,8 +876,15 @@ body {
   border-top: 1px solid rgba(15, 23, 42, 0.06);
 }
 
+.add-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
 .add {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 9px 11px;
   border: none;
   outline: none;
@@ -884,5 +904,34 @@ body {
 .add:focus {
   background: rgba(59, 110, 246, 0.07);
   box-shadow: 0 0 0 1.5px rgba(59, 110, 246, 0.28);
+}
+
+/* 发送按钮。空输入时禁用，避免"点了没反应"的困惑 */
+.send {
+  flex: none;
+  padding: 0 13px;
+  border: none;
+  border-radius: 9px;
+  background: #3b6ef6;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.send:hover:not(:disabled) {
+  background: #2f5fe0;
+}
+
+.send:active:not(:disabled) {
+  background: #2751c9;
+}
+
+.send:disabled {
+  background: rgba(15, 23, 42, 0.07);
+  color: #b6c2d2;
+  cursor: default;
 }
 </style>

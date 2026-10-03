@@ -119,6 +119,20 @@ G 高DPI ⚠️ 150% 通过；100%/125% 与多显示器未实测（环境限制�
 【关键设计决定】逾期天数**派生**（date 与今天算差）而非存储计数 —— 天生不会和存储不一致；逾期顺延不需要任何定时任务，只是业务日变了视图自然重算；重复任务用到时才判断"今天发生吗"不预造记录；每月 31 号遇 2 月跳过不挪月末；重复任务不进逾期区（否则天天报警让人麻木）。
 
 【测试规模】148 个，5 个文件（date 26 / repeat 35 / reminder 30 / view 26 / todo 31），耗时约 150ms。测试日期统一取 2026 年 6 月避开夏令时切换日。踩坑：测试 helper 生成的 id 必须零填充（t0001），否则 t9/t10 字典序错乱导致依赖"创建顺序"的断言随机失败。
+- [2026-10-03 01:33] [工作记录] SQLite 持久化完成，挂件可日常使用（d951efe） — 里程碑：本地 SQLite 持久化接完，界面换掉假数据，挂件已能天天用。commit d951efe（代码）+ e1478ec（README），已 push origin main。
+
+【架构落地】大脑加「存储端口 + 应用服务」两层，实现依赖倒置：
+- packages/core/src/repository.ts —— 端口接口 TodoRepository { list(); upsert(todos) }，零平台 API
+- packages/core/src/memory-repository.ts —— 内存实现（测试/浏览器调样式），写入时显式克隆（不用 structuredClone，那会要求引入 DOM/Node lib）
+- packages/core/src/service.ts —— TodoService（无状态：改实体→落盘→返回新实体），注入 Clock 便于测试
+- 外壳实现 apps/desktop/src/data/sqlite-todo-repository.ts（tauri-plugin-sql）
+- 界面 apps/desktop/src/store/todos.ts：view 用 computed 算出来，配合 30 秒 tick 的 now，跨 04:00 自动翻天 —— 逾期顺延不需要任何定时任务
+
+【关键设计】单文件存储层拆两半：data/todo-row.ts（行↔实体映射，纯函数可单测）+ sqlite-todo-repository.ts（只开库和转发 SQL）。理由：15 列的映射最易错，拆出来才能用真库测。迁移 SQL 抽到 src-tauri/migrations/*.sql，Rust 用 include_str! 嵌入，**同一份 .sql 也被 TS 测试读取**，消除跨语言重复定义。
+
+【测试规模】220 个（core 168 + desktop 52）。desktop 三类：todo-row(25 映射往返/列数自洽/坏数据降级)、sqlite-roundtrip(15，用 Node 内置 node:sqlite 执行**真实 UPSERT_SQL**)、backend-contract(12，跨语言契约)。注意 apps/desktop 需 devDeps 加 vitest + @types/node，且 tsconfig 要显式 "types": ["node"] 才能用 node:fs/node:sqlite。
+
+【踩坑】改迁移 SQL 内容但版本号不变会导致 sqlx 校验和失败；开发期可直接删库重建（用户无数据时）。删库前务必确认 dev 没在跑。
 
 ## 经验教训 Lessons Learned
 
@@ -167,3 +181,23 @@ G 高DPI ⚠️ 150% 通过；100%/125% 与多显示器未实测（环境限制�
 set_pinned 原逻辑在"pinned=true 且面板已展开"时不发 widget:state（因为 set_expanded_inner 状态未变会提前 return），前端 📌 就不亮。凡是"前端要显示的状态"，Rust 侧设置后都应无条件补发一次事件，不要依赖下游的副作用。
 
 【遗留技术债】STRIP_HEIGHT=152 现在硬编码在 Rust 与 App.vue 两处，靠注释维系跨层契约，改样式极易忘记同步。更稳做法是前端上报或 Rust 下发。
+- [2026-10-03 01:33] [经验教训] sql:default 不含 allow-execute（写库静默失败）；跨语言契约必须写成测试 — 【教训一｜tauri-plugin-sql 的 sql:default 不含 allow-execute（严重）】
+已独立核实插件源码 ~/.cargo/registry/.../tauri-plugin-sql-2.5.0/permissions/default.toml：
+default = ["allow-close", "allow-load", "allow-select"]，**没有 allow-execute**。
+后果：照默认配，SELECT 能跑、INSERT/UPDATE 会在运行时被 ACL 拒绝，前端表现为"用户以为记下了，其实没存进去"——本产品最不可接受的失败模式，且没有任何编译期提示。
+正解：capabilities 里显式写 sql:allow-load + sql:allow-select + sql:allow-execute，不要用 sql:default。
+护栏：apps/desktop/test/backend-contract.test.ts 断言权限清单，防止回退。
+
+【教训二｜"不会有编译错误"的跨语言契约必须固化成测试】
+这类约定漏了只在运行时静默出错，值得专门写契约测试。已实现的：
+- SQL 权限必须含 allow-execute
+- Rust 的 DB_URL 与 TS 的 DB_URL 逐字一致（不一致会加载到另一个库、表不存在）
+- 迁移必须全部走 include_str!，且 lib.rs 里不得残留内联 CREATE TABLE/INDEX
+- 窄条高度：Rust 常量 STRIP_HEIGHT 与 App.vue 的 .strip height 一致
+通用做法：测试直接 readFileSync 读取源码/配置，用正则断言两边一致。
+
+【教训三｜未被执行过的 SQL 等于未验证】
+UPSERT_SQL 是拼出来的字符串，语法/列名/占位符个数错了都不会在编译期暴露，要等用户点保存才炸。正解：用 Node 内置 node:sqlite 建真库，读 Rust 侧同一份 .sql 迁移建表，再执行真实 SQL 字符串做往返验证。这也顺带消除了 schema 的重复定义。
+
+【教训四｜流程：并行写同一目录会互相覆盖】
+本次我（Lead）在给子代理划定了 apps/desktop/src/data/sqlite-todo-repository.ts 之后，又亲自重构了该文件并新增同目录文件，子代理察觉"文件被改写"并发出警报（所幸它选择验证新版而非覆盖）。教训：委派时必须把我自己要动的文件从子代理的允许范围里排除干净；同一目录不要在委派期间并行改写。发现冲突后正确的处理是**验证当前版本并说明归属**，而不是回滚成自己的版本。
