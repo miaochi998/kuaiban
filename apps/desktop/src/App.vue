@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { fromDateKey, monthGrid, todosOnDate, type DateKey, type Todo, type TodoEdit } from "@kuaiban/core";
 import EditSheet from "./components/EditSheet.vue";
 import ReminderCard from "./components/ReminderCard.vue";
+import SettingsPanel from "./components/SettingsPanel.vue";
 import TodoRow from "./components/TodoRow.vue";
 import {
   browserHintStorage,
@@ -14,7 +15,7 @@ import {
 } from "./lib/hints";
 import { parseDraft } from "./lib/parse-draft";
 import { SNOOZE_SHORT_MS, startReminders, useReminderStore } from "./store/reminders";
-import { DEFAULT_SERVER_URL, useAccountStore } from "./store/account";
+import { useAccountStore } from "./store/account";
 import { startSync, useSyncStore } from "./store/sync";
 import { useTodoStore, type PanelTab } from "./store/todos";
 
@@ -189,8 +190,6 @@ const {
   active: activeReminders,
   activeCount,
   missedCount,
-  settings: reminderSettings,
-  inQuietHours,
   morningSummary,
 } = reminders;
 
@@ -199,61 +198,26 @@ const showSettings = ref(false);
 // ── 账号与同步（离线优先：不登录也能正常用，只是不同步）──
 const account = useAccountStore();
 const sync = useSyncStore();
-const { status: syncStatus } = sync;
-
-const loginUser = ref("");
-const loginPass = ref("");
-const serverDraft = ref(account.serverUrl.value);
-
-/** 同步状态点：颜色 + 文案。一眼看出"我的东西传上去了没" */
-const syncDot = computed(() => {
-  switch (syncStatus.value.state) {
-    case "syncing":
-      return { cls: "syncing", label: "正在同步…" };
-    case "error":
-      return { cls: "error", label: sync.lastError.value ?? "同步出错" };
-    case "synced":
-      return { cls: "ok", label: "已同步" };
-    default:
-      return { cls: "off", label: "未登录（只在本地保存）" };
-  }
-});
-
-const syncDetail = computed(() => {
-  const pending = syncStatus.value.pendingCount;
-  if (!account.loggedIn.value) return "登录后可在多台设备之间同步";
-  if (pending > 0) return `还有 ${pending} 条待上传`;
-  return "本地与服务器一致";
-});
-
-async function doLogin() {
-  if (!loginUser.value.trim() || !loginPass.value) return;
-  if (await account.login(loginUser.value.trim(), loginPass.value)) {
-    loginPass.value = "";
-    sync.startSync();
-    showSettings.value = false;
-    store.flashNotice("已登录，开始同步");
-  }
-}
-
-async function doLogout() {
-  sync.stopSync();
-  await account.logout();
-  store.flashNotice("已退出登录（本地数据仍在）");
-}
-
-function saveServerUrl() {
-  account.setServerUrl(serverDraft.value);
-  serverDraft.value = account.serverUrl.value;
-  store.flashNotice("服务器地址已保存，请重新登录");
-}
-
 /**
- * 正在编辑哪一条（null = 没在编辑）。
+ * 同步状态点：**只在有话要说的时候出现**。
  *
- * 编辑面板会**顶掉面板下方的全部内容**（提醒卡片、页签、清单、输入框），
- * 因为 340px 宽的面板塞不下"一边看清单一边编辑"。
+ * 一开始我让它常驻显示（灰=未登录、绿=已同步），结果用户的第一反应是
+ * "这个小灰点是什么意思？" —— 一个没有文字的状态点，用户没法自己搞明白，
+ * 而且它会一直被误读成"某个按钮"。
+ * 现在改成：一切正常时不显示；只有「同步中 / 出错 / 有待上传」才冒出来。
+ * 那时它是个**提示**，而不是一个需要用户去猜的装饰。
  */
+const syncHint = computed<{ tone: string; title: string } | null>(() => {
+  if (!account.loggedIn.value) return null;
+  const now = sync.status.value;
+  if (now.state === "syncing") return { tone: "syncing", title: "正在同步…" };
+  if (now.state === "error") return { tone: "error", title: sync.lastError.value ?? "同步出错" };
+  if (now.pendingCount > 0) {
+    return { tone: "pending", title: `还有 ${now.pendingCount} 条没上传（点开设置看详情）` };
+  }
+  return null;
+});
+
 const editingTodo = ref<Todo | null>(null);
 
 async function onSaveEdit(edit: TodoEdit) {
@@ -472,17 +436,19 @@ function shiftMonth(delta: number) {
       <header class="head">
         <div class="head-date">{{ todayLabel }}</div>
         <div class="head-count">还有 <b>{{ remainingCount }}</b> 件</div>
+        <!-- 只在有话要说时出现，见 syncHint 的说明 -->
         <button
+          v-if="syncHint"
           class="sync-dot"
-          :class="syncDot.cls"
+          :class="syncHint.tone"
           type="button"
-          :title="`${syncDot.label}（点击打开设置）`"
+          :title="syncHint.title"
           @click="showSettings = true"
         ></button>
         <button
-          class="pin"
+          class="head-icon"
           type="button"
-          :title="showSettings ? '关闭设置' : '设置'"
+          title="设置"
           :class="{ on: showSettings }"
           @click="showSettings = !showSettings"
         >⚙</button>
@@ -504,6 +470,10 @@ function shiftMonth(delta: number) {
         @cancel="editingTodo = null"
         @remove="onRemoveEdit"
       />
+
+      <!-- 设置同样**占满整个面板**：点设置就是要专心改设置，
+           旁边还堆着提醒卡片、页签、底部输入框，只会让人不知道看哪儿 -->
+      <SettingsPanel v-else-if="showSettings" @close="showSettings = false" />
 
       <template v-else>
       <!--
@@ -556,110 +526,6 @@ function shiftMonth(delta: number) {
         </p>
 
         <p v-else-if="!ready" class="loading">{{ loadPhase }}</p>
-
-        <!-- ── 设置 ── -->
-        <div v-else-if="showSettings" class="settings">
-          <!-- ── 账号与同步 ── -->
-          <div class="set-row">
-            <span class="set-label">同步</span>
-            <span class="set-note inline" :class="syncDot.cls">{{ syncDot.label }}</span>
-          </div>
-
-          <template v-if="account.loggedIn.value">
-            <div class="set-row">
-              <span class="set-label">
-                {{ account.user.value?.displayName }}（{{ account.user.value?.username }}）
-              </span>
-              <button class="set-link" type="button" @click="sync.syncNow()">立即同步</button>
-              <button class="set-toggle" type="button" @click="doLogout">退出</button>
-            </div>
-            <p class="set-note">{{ syncDetail }}</p>
-          </template>
-
-          <template v-else>
-            <p class="set-note">
-              不登录也能正常用 —— 数据一直存在这台电脑上。登录只是为了多设备同步。
-            </p>
-            <input v-model="loginUser" class="es-input small" type="text" placeholder="登录名" />
-            <input
-              v-model="loginPass"
-              class="es-input small"
-              type="password"
-              placeholder="密码"
-              @keydown.enter="doLogin"
-            />
-            <button class="set-wide" type="button" :disabled="account.busy.value" @click="doLogin">
-              {{ account.busy.value ? "登录中…" : "登录并开始同步" }}
-            </button>
-            <p v-if="account.lastError.value" class="es-error">{{ account.lastError.value }}</p>
-          </template>
-
-          <div class="set-row">
-            <span class="set-label">服务器地址</span>
-            <button class="set-link" type="button" @click="saveServerUrl">保存</button>
-          </div>
-          <input
-            v-model="serverDraft"
-            class="es-input small"
-            type="text"
-            :placeholder="DEFAULT_SERVER_URL"
-          />
-
-          <!-- 本地数据属于别的账号：停下来说清楚，绝不硬推 -->
-          <div v-if="sync.conflictOwner.value" class="owner-warning">
-            <p class="set-note warn">
-              这台电脑上的待办属于另一个账号（{{ sync.conflictOwner.value.slice(0, 8) }}…）。
-              要用当前账号同步，需要把这份数据过户给它。
-            </p>
-            <button
-              class="set-wide warn"
-              type="button"
-              @click="sync.adoptLocalDataFor(account.user.value!.id)"
-            >把本地待办过户给当前账号</button>
-          </div>
-
-          <div class="set-row">
-            <span class="set-label">提醒声音</span>
-            <button
-              class="set-link"
-              type="button"
-              @click="reminders.previewChime()"
-            >试听</button>
-            <button
-              class="set-toggle"
-              :class="{ on: reminderSettings.soundEnabled }"
-              type="button"
-              @click="reminders.setSoundEnabled(!reminderSettings.soundEnabled)"
-            >{{ reminderSettings.soundEnabled ? "开" : "关" }}</button>
-          </div>
-
-          <div class="set-row">
-            <span class="set-label">早上汇总没定时间的事</span>
-            <button
-              class="set-toggle"
-              :class="{ on: reminderSettings.allDaySummaryEnabled }"
-              type="button"
-              @click="reminders.setAllDaySummaryEnabled(!reminderSettings.allDaySummaryEnabled)"
-            >{{ reminderSettings.allDaySummaryEnabled ? "开" : "关" }}</button>
-          </div>
-
-          <div class="set-row">
-            <span class="set-label">免打扰 22:00–07:00</span>
-            <button
-              class="set-toggle"
-              :class="{ on: reminderSettings.quietHours.enabled }"
-              type="button"
-              @click="reminders.setQuietEnabled(!reminderSettings.quietHours.enabled)"
-            >{{ reminderSettings.quietHours.enabled ? "开" : "关" }}</button>
-          </div>
-
-          <p class="set-note">
-            免打扰期间只让图标闪动，不响声音、不自动弹面板 —— 你主动点开仍然能看到。
-          </p>
-          <p class="set-note dim">
-            当前：{{ inQuietHours ? "免打扰中" : "正常提醒" }}
-          </p>
-        </div>
 
         <!-- ── 日历页签 ── -->
         <template v-else-if="activeTab === 'calendar'">
@@ -1341,21 +1207,16 @@ body {
   background: rgba(59, 110, 246, 0.24);
 }
 
-/* 同步状态点 */
+/* 同步提示点：只在"同步中 / 出错 / 有待上传"时出现 */
 .sync-dot {
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
   flex: none;
   padding: 0;
   border: none;
   border-radius: 50%;
-  background: #cbd5e1;
+  background: #3b6ef6;
   cursor: pointer;
-  transition: background 0.15s;
-}
-
-.sync-dot.ok {
-  background: #22c55e;
 }
 
 .sync-dot.syncing {
@@ -1367,122 +1228,39 @@ body {
   background: #dc2626;
 }
 
+/* 头部图标按钮。原来 15px 太小不好点，放大到 26px */
+.head-icon,
+.pin {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity 0.13s, background 0.13s;
+}
+
+.head-icon:hover,
+.pin:hover {
+  opacity: 1;
+  background: rgba(15, 23, 42, 0.07);
+}
+
+.head-icon.on,
+.pin.on {
+  opacity: 1;
+  background: rgba(59, 110, 246, 0.13);
+}
+
 @keyframes dot-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
-}
-
-/* 设置面板 */
-.set-note.inline {
-  margin: 0;
-  flex: none;
-}
-
-.set-note.warn {
-  color: #b45309;
-}
-
-.set-wide {
-  width: 100%;
-  margin-top: 7px;
-  padding: 7px 0;
-  border: none;
-  border-radius: 8px;
-  background: #3b6ef6;
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  color: #fff;
-  cursor: pointer;
-}
-
-.set-wide:hover {
-  background: #2f5fe0;
-}
-
-.set-wide:disabled {
-  background: rgba(15, 23, 42, 0.07);
-  color: #b6c2d2;
-  cursor: default;
-}
-
-.set-wide.warn {
-  background: #ea580c;
-}
-
-.owner-warning {
-  margin-top: 10px;
-  padding: 8px 9px;
-  border-radius: 8px;
-  background: rgba(234, 88, 12, 0.07);
-}
-
-/* 设置面板 */
-.settings {
-  padding: 6px 8px 10px;
-}
-
-.set-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 2px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.05);
-}
-
-.set-label {
-  flex: 1;
-  min-width: 0;
-  font-size: 12px;
-  color: #334155;
-}
-
-.set-toggle {
-  flex: none;
-  width: 34px;
-  padding: 3px 0;
-  border: none;
-  border-radius: 7px;
-  background: rgba(15, 23, 42, 0.08);
-  font-family: inherit;
-  font-size: 11px;
-  color: #94a3b8;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-
-.set-toggle.on {
-  background: rgba(59, 110, 246, 0.14);
-  color: #3b6ef6;
-  font-weight: 600;
-}
-
-.set-link {
-  flex: none;
-  padding: 3px 8px;
-  border: none;
-  border-radius: 7px;
-  background: rgba(15, 23, 42, 0.05);
-  font-family: inherit;
-  font-size: 11px;
-  color: #64748b;
-  cursor: pointer;
-}
-
-.set-link:hover {
-  background: rgba(59, 110, 246, 0.12);
-  color: #3b6ef6;
-}
-
-.set-note {
-  margin: 8px 2px 0;
-  font-size: 10px;
-  line-height: 1.6;
-  color: #94a3b8;
-}
-
-.set-note.dim {
-  color: #c2cddb;
 }
 
 /* 底部输入 */
