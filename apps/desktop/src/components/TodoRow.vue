@@ -22,6 +22,15 @@ const emit = defineEmits<{
 
 const done = computed(() => isOccurrenceDone(props.todo, props.dateKey));
 const isOverdue = computed(() => (props.overdueDays ?? 0) > 0);
+
+/**
+ * 能不能"一键挪到某天"。
+ * - 逾期的一次性待办 → 搬到今天
+ * - 随笔里没排期的（date 为 null）→ 排到今天
+ * 后者本来只能看不能动，记进随笔的东西就"烂"在那儿了。
+ */
+const canCarry = computed(() => isOverdue.value || props.todo.date === null);
+const carryLabel = computed(() => (props.todo.date === null ? "排今天" : "搬今天"));
 const repeatLabel = computed(() =>
   props.todo.repeat.kind === "none" ? "" : describeRepeat(props.todo.repeat),
 );
@@ -52,12 +61,12 @@ const repeatLabel = computed(() =>
 
     <div class="actions">
       <button
-        v-if="isOverdue"
+        v-if="canCarry"
         class="act"
         type="button"
-        title="搬到今天"
+        :title="carryLabel"
         @click="emit('carry-over')"
-      >搬今天</button>
+      >{{ carryLabel }}</button>
       <button class="act danger" type="button" title="删除" @click="emit('remove')">删</button>
     </div>
   </div>

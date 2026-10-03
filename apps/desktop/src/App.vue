@@ -4,6 +4,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { fromDateKey, monthGrid, todosOnDate, type DateKey, type Todo } from "@kuaiban/core";
 import TodoRow from "./components/TodoRow.vue";
+import {
+  browserHintStorage,
+  loadDismissedHints,
+  pickHint,
+  saveDismissedHints,
+} from "./lib/hints";
 import { parseDraft } from "./lib/parse-draft";
 import { useTodoStore, type PanelTab } from "./store/todos";
 
@@ -237,6 +243,27 @@ const placeholder = computed(() => {
 
 /** 输入框里有内容才允许提交（按钮的禁用态据此决定） */
 const canSubmit = computed(() => draft.value.trim().length > 0);
+
+// ── 用法提示 ──
+// 需要"教一次"的技巧只出现一次（点 ✕ 或下次启动就不再出现），
+// 教完之后只留一行很淡的常驻备忘。理由见 lib/hints.ts 顶部注释。
+const hintStorage = browserHintStorage();
+const dismissedHints = ref<Set<string>>(loadDismissedHints(hintStorage));
+
+const activeHint = computed(() =>
+  pickHint({
+    tab: activeTab.value,
+    hasTarget: canAddHere.value,
+    dismissed: dismissedHints.value,
+  }),
+);
+
+function dismissHint() {
+  const next = new Set(dismissedHints.value);
+  next.add(activeHint.value.hint.id);
+  dismissedHints.value = next;
+  saveDismissedHints(hintStorage, next);
+}
 
 const emptyHint = computed(() => {
   switch (activeTab.value) {
@@ -512,9 +539,23 @@ function shiftMonth(delta: number) {
             @click="submitDraft"
           >添加</button>
         </div>
-        <!-- 日历页签下没点日期时，明确告诉用户下一步该做什么，
-             而不是把输入框藏起来让人以为"这里不能加" -->
-        <p v-else class="foot-hint">点日历上的某一天，就能给那天加待办</p>
+        <!--
+          用法提示。分两类：
+          · coach（教学）—— 点 ✕ 之后永久不再出现
+          · 常驻备忘 —— 随页签变化的淡淡一行
+          日历页签下没点日期时，这里会提示"点日历上的某一天"，
+          而不是把输入框藏起来让人以为"这里不能加"。
+        -->
+        <div class="hint-line" :class="{ coach: activeHint.coach }">
+          <span class="hint-text">{{ activeHint.hint.text }}</span>
+          <button
+            v-if="activeHint.coach"
+            class="hint-close"
+            type="button"
+            title="知道了，别再提示"
+            @click="dismissHint"
+          >✕</button>
+        </div>
       </footer>
     </section>
   </div>
@@ -965,12 +1006,57 @@ body {
   border-top: 1px solid rgba(15, 23, 42, 0.06);
 }
 
-.foot-hint {
-  margin: 2px 2px 0;
-  font-size: 11px;
-  line-height: 1.6;
+/* 用法提示：一行，很淡。教学校态时略微突出并给个关闭按钮 */
+.hint-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 7px 2px 0;
+  min-height: 15px;
+}
+
+.hint-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  line-height: 1.5;
   color: #b6c2d2;
   text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hint-line.coach {
+  padding: 4px 7px;
+  border-radius: 7px;
+  background: rgba(59, 110, 246, 0.07);
+}
+
+.hint-line.coach .hint-text {
+  color: #6b8fd8;
+  text-align: left;
+  white-space: normal;
+}
+
+.hint-close {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1;
+  color: #9db3dd;
+  cursor: pointer;
+}
+
+.hint-close:hover {
+  background: rgba(59, 110, 246, 0.14);
+  color: #3b6ef6;
 }
 
 .add-row {

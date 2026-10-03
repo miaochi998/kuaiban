@@ -159,7 +159,7 @@ test("日历页签：没点日期时明确提示怎么做，而不是把输入�
 
   await expect(page.locator(".cal-grid")).toBeVisible();
   await expect(page.locator(".add")).toHaveCount(0);
-  await expect(page.locator(".foot-hint")).toContainText("点日历上的某一天");
+  await expect(page.locator(".hint-line")).toContainText("点日历上的某一天");
 });
 
 test("日历页签：点一天就能给那天加待办", async ({ page }) => {
@@ -330,4 +330,84 @@ test("钉子按钮可切换（浏览器里只是本地状态）", async ({ page 
   await expect(page.locator(".pin")).not.toHaveClass(/on/);
   await page.locator(".pin").click();
   await expect(page.locator(".pin")).toHaveClass(/on/);
+});
+
+
+// ─────────────────────────────────────────────────────────────
+// 用法引导：教一次就闭嘴
+//
+// 用户反馈过"光看界面不一定知道能这么用"。这里的约定是：
+// 教学提示每条只出现一次，点 ✕ 后永久不再出现；教完之后只剩一行很淡的常驻备忘。
+// ─────────────────────────────────────────────────────────────
+
+test("首次使用会教「时间可以直接写在输入框里」", async ({ page }) => {
+  const hint = page.locator(".hint-line");
+  await expect(hint).toHaveClass(/coach/);
+  await expect(hint).toContainText("直接写时间");
+  await expect(page.locator(".hint-close")).toBeVisible();
+});
+
+test("点 ✕ 之后换成下一条，而且刷新也不会再教同一条", async ({ page }) => {
+  const hint = page.locator(".hint-line");
+  await expect(hint).toContainText("直接写时间");
+
+  await page.locator(".hint-close").click();
+  await expect(hint).toContainText("昨日未完成");
+
+  await page.reload();
+  await expect(page.locator(".widget.expanded")).toBeVisible();
+  await expect(page.locator(".hint-line")).not.toContainText("直接写时间");
+  await expect(page.locator(".hint-line")).toContainText("昨日未完成");
+});
+
+test("学过的提示，换个页签也不会重新教一遍", async ({ page }) => {
+  await expect(page.locator(".hint-line")).toContainText("直接写时间");
+  await page.locator(".hint-close").click();
+
+  // 随笔页签：time-shortcut 已学过，应该给随笔专属的那条
+  await page.locator(".tab", { hasText: "随笔" }).click();
+  await expect(page.locator(".hint-line")).toContainText("排今天");
+});
+
+test("所有技巧都教完之后，只剩一行淡淡的常驻备忘（不再有 ✕）", async ({ page }) => {
+  for (let i = 0; i < 10; i++) {
+    const close = page.locator(".hint-close");
+    if ((await close.count()) === 0) break;
+    await close.click();
+  }
+
+  const hint = page.locator(".hint-line");
+  await expect(hint).not.toHaveClass(/coach/);
+  await expect(hint).toContainText("时间会被自动识别");
+  await expect(page.locator(".hint-close")).toHaveCount(0);
+});
+
+test("日历没选日期时给的是操作指引，不是教学提示", async ({ page }) => {
+  await page.locator(".tab", { hasText: "日历" }).click();
+  const hint = page.locator(".hint-line");
+  await expect(hint).not.toHaveClass(/coach/);
+  await expect(hint).toContainText("点日历上的某一天");
+});
+
+// ─────────────────────────────────────────────────────────────
+// 随笔：一键排期
+// ─────────────────────────────────────────────────────────────
+
+test("随笔里「排今天」能把没排期的事排到今天", async ({ page }) => {
+  const errors = collectErrors(page);
+
+  await page.locator(".tab", { hasText: "随笔" }).click();
+  await page.fill(".add", "一个灵感");
+  await page.press(".add", "Enter");
+
+  const row = page.locator(".row", { hasText: "一个灵感" });
+  await expect(row).toBeVisible();
+  await row.hover();
+  await row.locator(".act", { hasText: "排今天" }).click();
+
+  // 随笔里没了，今天清单里有了
+  await expect(page.locator(".row", { hasText: "一个灵感" })).toHaveCount(0);
+  await page.locator(".tab", { hasText: "今天" }).click();
+  await expect(page.locator(".row", { hasText: "一个灵感" })).toBeVisible();
+  expect(errors).toEqual([]);
 });
