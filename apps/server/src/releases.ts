@@ -100,6 +100,18 @@ export class ReleaseStore {
   private static readonly CACHE_MS = 5 * 60_000;
   private cached: RemoteSnapshot | null = null;
 
+  /**
+   * 文件名 → GitHub 上的下载地址。
+   *
+   * 同事的电脑多半连不上 GitHub（国内网络），所以**下载页里一律用本站地址**，
+   * 由服务器回源到 GitHub 取回来再发给他们（见 openAsset）。
+   * 这里记的就是"回源去哪儿取"。
+   */
+  private readonly assetSources = new Map<string, string>();
+
+  /** 正在回源的文件的等待者，避免两个人同时点同一个包时下载两遍 */
+  private readonly inflight = new Map<string, Promise<string>>();
+
   constructor(opts: { dir: string; origin: string; githubRepo?: string; githubToken?: string }) {
     this.dir = opts.dir;
     this.origin = opts.origin.replace(/\/+$/, "");
@@ -134,6 +146,10 @@ export class ReleaseStore {
   private listingFromGithub(release: GithubRelease): PublicReleases {
     const bySlot = new Map<string, PublicRelease>();
 
+    // 记下回源地址（同事那边下不动的 GitHub 地址只留给自己用）
+    this.assetSources.clear();
+    for (const asset of release.assets) this.assetSources.set(asset.name, asset.url);
+
     for (const asset of release.assets) {
       const platform = platformOf(asset.name);
       if (!platform) continue;
@@ -153,7 +169,8 @@ export class ReleaseStore {
         hint: slot.hint,
         kind: slot.kind,
         file: asset.name,
-        url: asset.url,
+        // ⚠️ **本站地址**，不是 GitHub 地址。同事的电脑连不上 GitHub。
+        url: `${this.origin}/downloads/${encodeURIComponent(asset.name)}`,
         sizeLabel: humanSize(asset.size),
         available: true,
       });
@@ -207,7 +224,11 @@ export class ReleaseStore {
       const signature = await this.fetchSignature(sigAsset, cacheDir);
       if (!signature) continue;
 
-      platforms[target] = { signature, url: asset.url };
+      // 同样用本站地址 —— 自动更新也得走公司服务器，否则同事那边更新不了
+      platforms[target] = {
+        signature,
+        url: `${this.origin}/downloads/${encodeURIComponent(asset.name)}`,
+      };
     }
 
     if (Object.keys(platforms).length === 0) return null;
@@ -220,16 +241,25 @@ export class ReleaseStore {
     };
   }
 
-  /** 更新包文件名 → Tauri 的平台标识 */
+  /**
+   * 更新包文件名 → Tauri 的平台标识。
+   *
+   * ⚠️ **认不出架构就返回 null，绝不默认一个。**
+   * Tauri 打出来的 macOS 更新包原始文件名是 `KuaiBan.app.tar.gz` —— 里面**没有**
+   * 架构信息（架构在目录名 `target/<arch>/release/...` 上，一传到 Release 就丢了）。
+   * 如果这时随手默认成某一个，就会**把 Apple 芯片的包装到 Intel 机器上**
+   * （或反过来），用户那边直接起不来。
+   * 所以 CI 里会先把架构写进文件名（见 .github/workflows/release-client.yml）。
+   */
   private targetOf(name: string): string | null {
-    const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
     if (/\.app\.tar\.gz$/i.test(name)) {
-      // macOS 的更新包里架构是靠文件名区分的
-      const macArch = /aarch64|arm64/i.test(name) ? "aarch64" : "x86_64";
-      return `darwin-${macArch}`;
+      if (/aarch64|arm64/i.test(name)) return "darwin-aarch64";
+      if (/x64|x86_64/i.test(name)) return "darwin-x86_64";
+      return null; // 分不清就不发，免得发错
     }
-    if (/\.nsis\.zip$/i.test(name)) return "windows-x86_64";
-    void arch;
+    if (/\.nsis\.zip$/i.test(name)) {
+      return /arm64|aarch64/i.test(name) ? "windows-aarch64" : "windows-x86_64";
+    }
     return null;
   }
 
@@ -322,6 +352,67 @@ export class ReleaseStore {
       pub_date: manifest.releasedAt,
       platforms,
     };
+  }
+
+  /**
+   * 确保文件在本地；不在就从 GitHub 取回来。
+   *
+   * 返回本地绝对路径。**边下边存**：第一个点的人会稍微等一下（同时文件
+   * 落盘），之后所有人都是本地直读 —— 又快又省事，且**不需要任何人手动上传**。
+   */
+  async ensureAsset(name: string): Promise<string | null> {
+    const local = this.resolveFile(name);
+    if (local) return local;
+
+    const source = this.assetSources.get(name);
+    if (!source) return null;
+
+    // 已经有人在取同一个文件 → 等他那次，别重复下载
+    const running = this.inflight.get(name);
+    if (running) {
+      try {
+        return await running;
+      } catch {
+        return null;
+      }
+    }
+
+    const task = this.downloadToCache(name, source);
+    this.inflight.set(name, task);
+    try {
+      return await task;
+    } catch {
+      return null;
+    } finally {
+      this.inflight.delete(name);
+    }
+  }
+
+  private async downloadToCache(name: string, source: string): Promise<string> {
+    const target = join(this.dir, name);
+    const partial = `${target}.partial`;
+
+    const res = await fetch(source, {
+      headers: this.githubToken ? { authorization: `Bearer ${this.githubToken}` } : {},
+      signal: AbortSignal.timeout(120_000), // 安装包几 MB，给足时间
+    });
+    if (!res.ok || !res.body) throw new Error(`回源失败：${res.status}`);
+
+    // 先写 .partial，下完再改名 —— 中途断网不会留下一个"看起来能用"的坏包
+    const { createWriteStream } = await import("node:fs");
+    const out = createWriteStream(partial);
+
+    const reader = res.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      out.write(Buffer.from(value));
+    }
+    await new Promise<void>((resolve, reject) => out.end((err?: Error) => (err ? reject(err) : resolve())));
+
+    const { renameSync } = await import("node:fs");
+    renameSync(partial, target);
+    return target;
   }
 
   /** 解析一个下载文件名，防目录穿越 */

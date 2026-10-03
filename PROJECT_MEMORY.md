@@ -381,6 +381,15 @@ e2e 新增 6 个日历用例（原"日历不该能加"的用例已改写），�
 【易踩点】NPM 里要放开上传体积（`client_max_body_size 200m;`），安装包 3～6 MB；域名 A 记录要指向**阿里云那台**（不是办公室 IP，因为证书与入口都在阿里云）。
 
 【仍未做】实际上线（用户操作 Portainer/路由器/NPM）、**Windows 客户端实机验证**（代码有 Windows 分支但从未真跑）、安卓/鸿蒙/iOS。全仓 548 个测试。
+- [2026-10-04 01:47] [工作记录] 客户端发版全自动化 + 端口定为 6520（aaf5f9d） — commit aaf5f9d。**用户确认的环境约束**：端口可用 6520-6529，本应用只需一个端口 → 用 **6520**（下载页/管理后台/API/下载/更新清单全在同端口；Dockerfile 与 Portainer 堆栈已同步）。**镜像走 Docker Hub**（与该服务器上其他应用一致）。参考项目 `/Volumes/zhangchi/Development/project/nodejs/bnoa`（用户指定仅供参考、不要照抄）：其模式为 tag v* → GitHub Actions 构建推 Docker Hub + 建 Release → 生产后台读 GitHub `/releases/latest` → 后端调 Portainer API（`updateStackVersion`，改 APP_VERSION + pullImage）重建堆栈。
+
+【客户端发版已改为全自动】新增 `.github/workflows/release-client.yml`（tag v* 或手动触发；矩阵 macOS-latest/Apple 芯片、macos-13/Intel、windows-latest；各自 tauri build 带签名；产物含 dmg/exe/msi/app.tar.gz/nsis.zip/.sig；最后 softprops/action-gh-release 发 Release；fail-fast:false 保证一个平台失败不拖垮其他）与 `apps/server/src/github-releases.ts`（读 GitHub Release）。服务端 `ReleaseStore` 增加 GitHub 模式（`KUAIBAN_GITHUB_REPO` / `KUAIBAN_GITHUB_TOKEN`），GitHub 优先、本地清单兜底，结果缓存 5 分钟，失败保留上次成功结果。
+
+【刻意的取舍（已验证的设计）】1) **只下载 .sig 签名文件（几百字节）内嵌进 Tauri 更新清单，安装包本体留在 GitHub 直连**——服务端不当中转站。2) **绝不猜 macOS 芯片**：必须靠文件名 aarch64/x64 区分，分不清返回 null 而非默认值（装错芯片的包用户打不开）。3) 请求失败/404/仓库名非法一律返回 null 不抛异常。
+
+【需要用户在 GitHub 仓库配置的 Secrets】**TAURI_SIGNING_PRIVATE_KEY**（私钥文件全部内容）与 **TAURI_SIGNING_PRIVATE_KEY_PASSWORD**（留空）。注意：把私钥放进 CI Secret 与"私钥不进仓库"并不冲突。
+
+【仍未做 / 下一步（用户待选）】**服务端从管理后台在线升级（调 Portainer API 重建堆栈）尚未实现**——方案与 bnoa 相同：后台「系统升级」页读 GitHub 最新版本号 → 调 Portainer API 改镜像 tag 并 pullImage 重建堆栈；Portainer 地址、Stack ID、Endpoint ID、Docker Hub 镜像名应**存在数据库/后台界面填写，不写死在代码里**。另：Docker Hub 构建脚本与部署文档更新、用户实际上线、Windows 实机验证、安卓/鸿蒙/iOS 均未开始。全仓 556 个测试。
 
 ## 经验教训 Lessons Learned
 
@@ -519,3 +528,7 @@ unsafe { let w = ptr as *mut AnyObject; let _: () = msg_send![w, setAcceptsMouse
 3) **容器化时数据用宿主机目录挂载而非 Docker 命名卷**（内部工具场景）：发版只需 rsync、备份就是打包一个目录、运维排查直接看得见文件；命名卷还得进容器里拷。把**一切需要备份的东西放同一目录**（数据库 + 发布产物 + 签名私钥），用户只需记住一件事。
 4) **Dockerfile 分层要先把依赖清单（package.json/pnpm-lock/workspace）拷进去装依赖，再拷源码** —— 否则改一行业务代码就要重装一次依赖。
 5) 内部工具镜像基础镜像选 `node:24-slim`：`node:sqlite` 内置，**运行时零第三方依赖**，少一类需要审计和升级的东西。
+
+## 备注 Notes
+
+- [2026-10-04 01:47] [备注] bnoa 的发布/升级模式（本项目的参照） — 参考项目 `/Volumes/zhangchi/Development/project/nodejs/bnoa` 的发布/升级模式（用户指定"仅作参考、不要照抄"）：开发侧 `git tag vX.Y.Z && git push origin vX.Y.Z` → `.github/workflows/build-and-push.yml` 构建并推 Docker Hub 镜像（`<user>/<app>-backend:X.Y.Z` 与 `:latest`）+ 建 GitHub Release → **生产后台「系统设置 → 系统升级」**点"检查更新"读 GitHub `/releases/latest` 拿版本号，点"开始升级"由后端调 **Portainer API** `updateStackVersion`（改 APP_VERSION 环境变量 + `pullImage: true`，fire-and-forget）重建堆栈 → 容器启动时自动跑数据库迁移 → 前端轮询版本号确认。升级配置（githubOwner/repo、dockerImagePrefix、Portainer url/stackId/endpointId）**存在数据库的 system_configs 里、由后台界面配置，不写死在代码**。生产环境原则：**严格只读，不直接改生产容器/数据库，一切走后台在线升级**。

@@ -378,7 +378,8 @@ export function createApp({ store, releases, disableRateLimit = false }: AppOpti
         // ── 安装包下载 ──
         const download = /^\/downloads\/(.+)$/.exec(url.pathname);
         if (req.method === "GET" && download) {
-          const file = releases?.resolveFile(decodeURIComponent(download[1]!));
+          // 不在本地就从 GitHub 取回来（同事的电脑连不上 GitHub，服务器能）
+          const file = releases ? await releases.ensureAsset(decodeURIComponent(download[1]!)) : null;
           if (!file) {
             res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
             res.end("没有这个文件");

@@ -101,6 +101,24 @@ jobs:
           VITE_KUAIBAN_SERVER: https://kuaiban.bonnei.com
         run: pnpm --filter @kuaiban/desktop tauri build ${{ matrix.args }}
 
+      - name: 把架构写进 macOS 更新包的文件名
+        shell: bash
+        # Tauri 打出来的更新包叫 `KuaiBan.app.tar.gz`，**文件名里没有架构信息**
+        # （架构只在目录名上，传到 Release 就丢了）。服务端据此区分芯片，
+        # 分不清就只能不发 —— 而"发错芯片的包"对用户是致命的。
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          cd apps/desktop/src-tauri/target
+          for f in $(find . -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig'); do
+            dir=$(dirname "$f")
+            base=$(basename "$f")
+            # 目录里带着 target 三元组（aarch64-apple-darwin / x86_64-apple-darwin）
+            arch=$(echo "$f" | grep -o 'aarch64' | head -1)
+            [ -z "$arch" ] && arch="x64"
+            mv "$f" "$dir/${base%.app.tar.gz*}_${arch}.app.tar.gz${base##*.app.tar.gz}"
+          done
+          find . -name '*.app.tar.gz*' | head -5
+
       - name: 收集产物
         uses: actions/upload-artifact@v4
         with:

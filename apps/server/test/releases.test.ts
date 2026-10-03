@@ -28,7 +28,7 @@ function writeManifest(over: Record<string, unknown> = {}) {
       notes: "修了几个问题",
       downloads: { "macos-arm64": { file: "KuaiBan_0.1.1_aarch64.dmg" } },
       updates: {
-        "darwin-aarch64": { file: "KuaiBan.app.tar.gz", signature: "签名内容" },
+        "darwin-aarch64": { file: "KuaiBan_0.1.1_aarch64.app.tar.gz", signature: "签名内容" },
       },
       ...over,
     }),
@@ -84,7 +84,7 @@ describe("自动更新清单", () => {
     expect(manifest.version).toBe("0.1.1");
     expect(manifest.platforms["darwin-aarch64"]!.signature).toBe("签名内容");
     expect(manifest.platforms["darwin-aarch64"]!.url).toBe(
-      "https://kuaiban.bonnei.com/downloads/KuaiBan.app.tar.gz",
+      "https://kuaiban.bonnei.com/downloads/KuaiBan_0.1.1_aarch64.app.tar.gz",
     );
   });
 
@@ -113,5 +113,72 @@ describe("下载接口的安全边界", () => {
   it("不允许带路径分隔符", () => {
     expect(store.resolveFile("sub/a.dmg")).toBeNull();
     expect(store.resolveFile("/etc/passwd")).toBeNull();
+  });
+});
+
+describe("下载地址必须指向本站，不能是 GitHub", () => {
+  it("同事的电脑连不上 GitHub —— 下载页与更新清单都得走公司服务器", async () => {
+    const gstore = new ReleaseStore({
+      dir,
+      origin: "https://kuaiban.bonnei.com",
+      githubRepo: "me/kuaiban",
+    });
+
+    // 假装 GitHub 上有一个新 Release
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("api.github.com")) {
+        return new Response(
+          JSON.stringify({
+            tag_name: "v0.1.2",
+            published_at: "2026-10-04T00:00:00Z",
+            body: "说明",
+            assets: [
+              {
+                name: "KuaiBan_0.1.2_aarch64.dmg",
+                browser_download_url: "https://github.com/me/kuaiban/releases/download/v0.1.2/x.dmg",
+                size: 3_000_000,
+              },
+              {
+                name: "KuaiBan_0.1.2_aarch64.app.tar.gz",
+                browser_download_url: "https://github.com/me/kuaiban/releases/download/v0.1.2/x.app.tar.gz",
+                size: 3_100_000,
+              },
+              {
+                name: "KuaiBan_0.1.2_aarch64.app.tar.gz.sig",
+                browser_download_url: "https://github.com/me/kuaiban/releases/download/v0.1.2/x.sig",
+                size: 424,
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      // .sig 的下载
+      return new Response("签名内容", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    try {
+      await gstore.refresh();
+    } finally {
+      globalThis.fetch = original;
+    }
+
+    const listing = gstore.publicListing();
+    const macos = listing.platforms.find((p) => p.key === "macos-arm64")!;
+
+    // 关键断言：地址是本公司的域名，不是 github.com
+    expect(macos.url).toBe("https://kuaiban.bonnei.com/downloads/KuaiBan_0.1.2_aarch64.dmg");
+    expect(macos.url).not.toContain("github");
+
+    const updater = gstore.updaterManifest()!;
+    expect(updater.platforms["darwin-aarch64"]!.url).toBe(
+      "https://kuaiban.bonnei.com/downloads/KuaiBan_0.1.2_aarch64.app.tar.gz",
+    );
+    expect(updater.platforms["darwin-aarch64"]!.url).not.toContain("github");
+
+    // 认不出芯片的更新包**不发** —— 发错芯片的包用户根本起不来
+    expect(updater.platforms["darwin-x86_64"]).toBeUndefined();
   });
 });
