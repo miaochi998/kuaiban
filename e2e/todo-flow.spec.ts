@@ -500,7 +500,11 @@ test("「全部推后」一次清空整张卡片", async ({ page }) => {
 });
 
 test("没到点的待办不会提前提醒", async ({ page }) => {
-  await page.fill(".add", "23:59 还没到点的事");
+  // 用「明天」的待办：它永远在未来。
+  // （原来用今天的「23:59」，结果凌晨 00:00–04:00 跑测试时业务日还是昨天，
+  //   23:59 已经过去了 —— 一个随运行时刻时灵时不灵的脆弱测试。）
+  await page.locator(".tab", { hasText: "明天" }).click();
+  await page.fill(".add", "10:00 还没到点的事");
   await page.press(".add", "Enter");
 
   await expect(page.locator(".row", { hasText: "还没到点的事" })).toBeVisible();

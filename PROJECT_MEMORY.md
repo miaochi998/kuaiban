@@ -377,3 +377,24 @@ main.ts 的 catch 只有 console.error；submitDraft 里 await store.addTodo 没
 - Playwright + 21 个 e2e（`pnpm e2e`），每个用例都断言"本轮操作页面无任何报错"。
 - 屏幕截图可用（用户开启了屏幕录制权限）；`screencapture` + Pillow 裁剪是验证真实界面的主力手段。
 - 合成鼠标/键盘：`/tmp/kbmouse.c`（CGEventPost）需要辅助功能权限；osascript keystroke 也可用但对中文/符号不稳。
+- [2026-10-03 23:56] [经验教训] macOS 非 key 窗口 CSS :hover 失效（acceptsMouseMovedEvents）+ 动作按钮不该常驻 — 修掉 macOS「不点一下就不响应悬停」+ 「完成」改回悬停，commit f360144，全仓 456 个测试。
+
+【macOS 悬停 bug（重要，可复用）】**根因：`NSWindow.acceptsMouseMovedEvents` 默认 false**，而 AppKit 只在窗口是 key window 时才无条件投递 `mouseMoved`。挂件是 `ActivationPolicy::Accessory` 辅助窗口、**永远不是 key** → WebView 收不到任何鼠标移动 → CSS `:hover` 永不更新。随便点一下让窗口变成 key，之后悬停就"恢复"了——症状与根因完全吻合。
+**修法**：setup 里对 NSWindow 发 `setAcceptsMouseMovedEvents: true`。用 `objc2`（本就在 tauri 依赖树里 0.6.4，加它不增加编译成本）：
+```rust
+let Ok(ptr) = window.ns_window() else { return };
+unsafe { let w = ptr as *mut AnyObject; let _: () = msg_send![w, setAcceptsMouseMovedEvents: true]; }
+```
+必须在主线程（setup）调用。**不需要**把窗口变成 key，所以不会抢焦点。
+实机验证：重启后不点击任何地方，鼠标移到待办行上「完成/删」直接出现。
+
+【通用教训】**"点一下就好了"类 bug 几乎总是焦点/key-window 状态问题**。非激活窗口上的 CSS :hover 失效，先查 acceptsMouseMovedEvents。
+
+【「完成」按钮位置的三次迭代】**用户最终结论：悬停出现最好**。
+1. 圆圈勾选 → 用户觉得要猜、像多选
+2. 悬停出现的「完成」「删」 → 用户说这是最好的
+3. 我改成常驻左侧 → 用户反馈"所有待办左侧都有完成按钮，视觉上会被错认为全部已完成"（常驻按钮被读成**状态指示**而不是动作入口）
+4. 改回悬停 → 定案
+**教训：常驻的动作按钮容易被误读为状态。** 一个"动作"该不该常驻，不只看使用频率，还要看它会不会被当成状态显示。
+
+【e2e 断言经验】`opacity: 0` 的元素 Playwright 仍算 visible，不能断言 `toBeHidden()`；要断言 `toHaveCSS("opacity","0")`。且 opacity 不继承，查容器而非子元素。

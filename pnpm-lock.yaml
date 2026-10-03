@@ -55,6 +55,25 @@ importers:
         specifier: ^3.3.5
         version: 3.3.12(typescript@6.0.3)
 
+  apps/server:
+    dependencies:
+      '@kuaiban/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@kuaiban/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.4
+        version: 26.6.4
+      typescript:
+        specifier: ~6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^5.0.3
+        version: 5.0.3(@types/node@26.6.4)(vite@8.3.2(@types/node@26.6.4))
+
   packages/core:
     dependencies:
       '@kuaiban/shared':
