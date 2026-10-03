@@ -322,6 +322,12 @@ e2e 新增 6 个日历用例（原"日历不该能加"的用例已改写），�
 【踩坑】1) 我用 python 按行号删除代码时删多了（把 submitDraft 等一起删了）——**按行号删除很危险，应该用内容标记定位**，且改完立刻 build 验证。2) 嵌套双引号在 it("...") 里的错误我这会话犯了三次，用「」规避。3) 打开设置时出现 activeHint is undefined 的渲染错误，**干净重启后消失 = 热更新脏状态**，不是真 bug；界面报"某绑定 undefined"时先排除 HMR 脏状态。
 
 【用户的推进顺序要求（重要）】"先作管理后台界面，把这些全部都在本地开发环境测试并优化修复完成后再做部署、联调及其他客户端的开发工作"。即：Docker/Caddy 部署、真机联调、安卓/鸿蒙全部排在本地体验打磨完成之后。
+- [2026-10-04 00:44] [工作记录] 服务器地址改为构建期烧入（7c1e532）；在线更新确认未实现待做 — commit 7c1e532。用户问"设置里为什么需要填服务器地址？难道还需要用户自己填？"——确实不该。已改为**构建期常量**：`VITE_KUAIBAN_SERVER` 环境变量在打包时烧进安装包（`apps/desktop/src/store/account.ts` 的 `SERVER_URL`），不设置时回退 http://127.0.0.1:8787 供本地开发。设置里的地址输入框已删除，改为一句"服务器地址是安装时就配好的，你不用填"。新增 apps/desktop/.env.example 说明，.env/.env.local 已进 .gitignore。e2e 加断言守着：设置面板里不允许存在任何 http 输入框。
+**规则**：公司内部工具的服务器地址属于"管理员部署时决定的事"，绝不能让每个员工手抄 URL。
+
+【已确认为疏漏：在线更新未实现】查证 Cargo.toml / tauri.conf.json 里**没有任何 updater 配置**。它在最早的功能清单里（"自动更新"），但前几轮把精力放在服务端、同步、管理后台，没有动。方案：tauri-plugin-updater + 一对签名密钥（私钥保管、公钥打进客户端以防假安装包）+ 静态更新清单与安装包。**可在本地全部测完**：本地起静态服务器放清单与安装包，版本号 0.1.0→0.1.1 即可看到应用自更新，无需真实部署。已向用户提出下一步做它，等待答复。
+
+【管理后台本地测试环境（用户手动测试用）】服务端以后台常驻任务运行，`KUAIBAN_DB="$HOME/Library/Application Support/com.kuaiban.server/kuaiban.db"` PORT=8787，已用 `open http://127.0.0.1:8787/` 在用户浏览器打开。测试账号：admin/admin12345（管理员）；zhang、li、wang、chen 均为 initpass123（普通用户）。可用 `pnpm dev:server` 或直接 `node --experimental-sqlite apps/server/src/main.ts` 重启。
 
 ## 经验教训 Lessons Learned
 

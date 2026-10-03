@@ -17,6 +17,7 @@ import { parseDraft } from "./lib/parse-draft";
 import { SNOOZE_SHORT_MS, startReminders, useReminderStore } from "./store/reminders";
 import { useAccountStore } from "./store/account";
 import { startSync, useSyncStore } from "./store/sync";
+import { startUpdater } from "./store/updater";
 import { useTodoStore, type PanelTab } from "./store/todos";
 
 // ─────────────────────────────────────────────────────────────
@@ -153,6 +154,8 @@ onMounted(async () => {
   startReminders();
   // 同步：没登录时它什么都不做（离线优先）
   startSync();
+  // 在线更新：后台悄悄查、悄悄下，装好了才提示重启
+  startUpdater();
 });
 
 onUnmounted(() => {

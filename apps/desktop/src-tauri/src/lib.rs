@@ -679,6 +679,10 @@ pub fn run() {
             set_expanded_inner(app, true);
         }))
         .plugin(tauri_plugin_opener::init())
+        // 在线更新。真正干活的是前端（这样更新提示能融进挂件的界面），
+        // 这里只把能力挂上去。
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations(DB_URL, migrations())

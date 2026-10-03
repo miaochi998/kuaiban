@@ -14,12 +14,36 @@ import { computed, ref } from "vue";
 import { useAccountStore } from "../store/account";
 import { useReminderStore } from "../store/reminders";
 import { useSyncStore } from "../store/sync";
+import { useUpdaterStore } from "../store/updater";
 
 const emit = defineEmits<{ (e: "close"): void }>();
 
 const account = useAccountStore();
 const sync = useSyncStore();
 const reminders = useReminderStore();
+const updater = useUpdaterStore();
+
+/** 更新状态用一句人话说清楚，别让用户看"phase" */
+const updateText = computed(() => {
+  switch (updater.phase.value) {
+    case "checking":
+      return "正在检查…";
+    case "latest":
+      return "已是最新版本";
+    case "available":
+      return `发现新版本 ${updater.newVersion.value}`;
+    case "downloading":
+      return updater.progress.value >= 0
+        ? `正在后台下载… ${Math.round(updater.progress.value * 100)}%`
+        : "正在后台下载…";
+    case "ready":
+      return `新版本 ${updater.newVersion.value} 已就绪，重启后生效`;
+    case "error":
+      return updater.error.value ?? "检查更新失败";
+    default:
+      return "";
+  }
+});
 const { settings: reminderSettings, inQuietHours } = reminders;
 
 // ── 账号 ──
@@ -169,6 +193,42 @@ async function doLogout() {
       <p class="sp-note">
         免打扰期间只让图标闪动，不响声音、不自动弹面板 —— 你主动点开仍然能看到。
         当前：{{ inQuietHours ? "免打扰中" : "正常提醒" }}
+      </p>
+
+      <!-- ── 关于与更新 ── -->
+      <div class="sp-section">关于</div>
+
+      <div class="sp-row">
+        <span class="sp-label">快办 {{ updater.currentVersion.value || "…" }}</span>
+        <button
+          class="sp-btn"
+          type="button"
+          :disabled="updater.phase.value === 'checking' || updater.phase.value === 'downloading'"
+          @click="updater.checkForUpdate(true)"
+        >检查更新</button>
+      </div>
+
+      <!-- 更新是后台悄悄进行的，所以进度条只在"正在下载"时出现 -->
+      <div v-if="updater.phase.value === 'downloading'" class="sp-progress">
+        <div class="sp-bar" :style="{ width: Math.max(4, (updater.progress.value < 0 ? 0.3 : updater.progress.value) * 100) + '%' }"></div>
+      </div>
+
+      <p
+        v-if="updateText"
+        class="sp-note"
+        :class="{ ok: updater.phase.value === 'ready', bad: updater.phase.value === 'error' }"
+      >{{ updateText }}</p>
+
+      <!-- 重启**必须用户点** —— 应用自己重启是有存在感的事，不能替他做 -->
+      <button
+        v-if="updater.phase.value === 'ready'"
+        class="sp-wide"
+        type="button"
+        @click="updater.restartToUpdate()"
+      >立即重启并更新</button>
+
+      <p class="sp-note dim">
+        更新会在后台自动检查与下载，装好之后才提示你重启 —— 不打断你正在做的事。
       </p>
     </div>
   </div>
@@ -436,5 +496,34 @@ async function doLogout() {
 
 .sp-warn p {
   margin: 0;
+}
+
+/* 下载进度条 */
+.sp-progress {
+  height: 4px;
+  margin-top: 9px;
+  border-radius: 2px;
+  background: rgba(15, 23, 42, 0.07);
+  overflow: hidden;
+}
+
+.sp-bar {
+  height: 100%;
+  border-radius: 2px;
+  background: #3b6ef6;
+  transition: width 0.3s ease;
+}
+
+.sp-note.ok {
+  color: #15803d;
+  font-weight: 600;
+}
+
+.sp-note.bad {
+  color: #dc2626;
+}
+
+.sp-note.dim {
+  color: #b6c2d2;
 }
 </style>

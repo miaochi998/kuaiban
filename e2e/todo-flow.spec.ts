@@ -992,3 +992,35 @@ test("同步失败不影响本地记录", async ({ page }) => {
   await page.press(".add", "Enter");
   await expect(page.locator(".row", { hasText: "断网也要能记" })).toBeVisible();
 });
+
+// ─────────────────────────────────────────────────────────────
+// 在线更新
+//
+// 浏览器里没有 Tauri 的更新能力，所以这里守的是**失败也不难看**：
+// 给一句人话、按钮不卡住、界面不崩。真正的自更新流程见
+// docs/在线更新-本地测试.md（需要打正式安装包才能验）。
+// ─────────────────────────────────────────────────────────────
+
+test("设置里有「关于与更新」，并且不会因此卡住或崩掉", async ({ page }) => {
+  const errors = collectErrors(page);
+
+  await page.locator(".head-icon").click();
+  await expect(page.locator(".sp-section", { hasText: "关于" })).toBeVisible();
+
+  const check = page.locator(".sp-btn", { hasText: "检查更新" });
+  await expect(check).toBeVisible();
+  await check.click();
+
+  // 不管成功失败，按钮都要恢复可点 —— 不能卡在"检查中"
+  await expect(check).toBeEnabled({ timeout: 20_000 });
+  expect(errors).toEqual([]);
+});
+
+test("更新是后台悄悄做的，正常时不占地方", async ({ page }) => {
+  await page.locator(".head-icon").click();
+
+  // 还没查 / 已是最新时，不该有"立即重启并更新"这种按钮
+  await expect(page.locator(".sp-wide", { hasText: "重启" })).toHaveCount(0);
+  // 进度条也只在下载时出现
+  await expect(page.locator(".sp-progress")).toHaveCount(0);
+});
