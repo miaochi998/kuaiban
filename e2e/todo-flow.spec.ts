@@ -137,11 +137,98 @@ test("在「随笔」页签添加 → 落到随笔区，不进今天", async ({ 
   await expect(page.locator(".row", { hasText: "一个灵感" })).toHaveCount(0);
 });
 
-test("「日历」页签隐藏输入框（那里不该能随手加）", async ({ page }) => {
+// ─────────────────────────────────────────────────────────────
+// 日历里给未来的某天加待办
+//
+// 用户反馈：「我想在 15 日添加两条待办，要怎么加？」
+// 之前的实现把日历页签的输入框整个藏了 —— 而"未来要做的事，现在先记到那天"
+// 恰恰是日历最该支持的操作。现在：点一天 → 底部出现输入框 → 加到那天。
+// ─────────────────────────────────────────────────────────────
+
+/** 点日历上某个日期（排除上下月补齐的灰格子） */
+async function pickDay(page: Page, day: number) {
+  await page
+    .locator(".cal-cell:not(.dim)")
+    .filter({ hasText: new RegExp(`^${day}$`) })
+    .first()
+    .click();
+}
+
+test("日历页签：没点日期时明确提示怎么做，而不是把输入框藏起来", async ({ page }) => {
+  await page.locator(".tab", { hasText: "日历" }).click();
+
+  await expect(page.locator(".cal-grid")).toBeVisible();
+  await expect(page.locator(".add")).toHaveCount(0);
+  await expect(page.locator(".foot-hint")).toContainText("点日历上的某一天");
+});
+
+test("日历页签：点一天就能给那天加待办", async ({ page }) => {
+  const errors = collectErrors(page);
+
+  await page.locator(".tab", { hasText: "日历" }).click();
+  await pickDay(page, 15);
+
+  // 输入框出现，且占位文案点明加到哪天
   await expect(page.locator(".add")).toBeVisible();
+  await expect(page.locator(".add")).toHaveAttribute("placeholder", /15日/);
+
+  await page.fill(".add", "9:30 交材料");
+  await page.press(".add", "Enter");
+
+  // 出现在那一天的列表里，时间是识别出来的
+  const row = page.locator(".row", { hasText: "交材料" });
+  await expect(row).toBeVisible();
+  await expect(row.locator(".time")).toHaveText("09:30");
+
+  // 反馈里写清加到了哪天
+  await expect(page.locator(".toast")).toContainText("15日");
+  expect(errors).toEqual([]);
+});
+
+test("日历页签：同一天连着加两条（用户的实际用法）", async ({ page }) => {
+  await page.locator(".tab", { hasText: "日历" }).click();
+  await pickDay(page, 15);
+
+  await page.fill(".add", "第一条");
+  await page.press(".add", "Enter");
+  await page.fill(".add", "第二条");
+  await page.click(".send");
+
+  await expect(page.locator(".row", { hasText: "第一条" })).toBeVisible();
+  await expect(page.locator(".row", { hasText: "第二条" })).toBeVisible();
+  // 输入框清空且仍可用，可以接着加第三条
+  await expect(page.locator(".add")).toHaveValue("");
+});
+
+test("日历页签：加完之后那天的格子上出现小圆点", async ({ page }) => {
+  await page.locator(".tab", { hasText: "日历" }).click();
+  await pickDay(page, 15);
+  await page.fill(".add", "有安排");
+  await page.press(".add", "Enter");
+
+  const cell = page
+    .locator(".cal-cell:not(.dim)")
+    .filter({ hasText: new RegExp("^15$") })
+    .first();
+  await expect(cell.locator(".cal-dot")).toBeVisible();
+  await expect(cell).toHaveClass(/picked/);
+});
+
+test("日历页签：没选日期时按回车不会凭空造出一条无日期待办", async ({ page }) => {
   await page.locator(".tab", { hasText: "日历" }).click();
   await expect(page.locator(".add")).toHaveCount(0);
-  await expect(page.locator(".cal-grid")).toBeVisible();
+  // 输入框根本不存在，自然也没有待办被创建
+  await expect(page.locator(".row")).toHaveCount(0);
+});
+
+test("日历页签：切走再切回来仍然记得选中的是哪天", async ({ page }) => {
+  await page.locator(".tab", { hasText: "日历" }).click();
+  await pickDay(page, 15);
+  await page.locator(".tab", { hasText: "今天" }).click();
+  await page.locator(".tab", { hasText: "日历" }).click();
+
+  await expect(page.locator(".add")).toBeVisible();
+  await expect(page.locator(".add")).toHaveAttribute("placeholder", /15日/);
 });
 
 // ─────────────────────────────────────────────────────────────

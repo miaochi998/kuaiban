@@ -186,14 +186,50 @@ const tomorrowLabel = computed(() => {
   return `明天 ${d.getMonth() + 1}月${d.getDate()}日 周${WEEKDAYS[d.getDay()]}`;
 });
 
+/**
+ * 当前页签下，新待办应该落到哪一天。
+ *
+ * - 今天 / 明天：对应的业务日
+ * - 随笔：`null`（未排期）
+ * - **日历：选中的那一天** —— 这就是"未来要做的事，现在先记到那天"的做法
+ */
+const draftTargetDate = computed<DateKey | null>(() => {
+  switch (activeTab.value) {
+    case "tomorrow":
+      return view.value.tomorrowDate;
+    case "inbox":
+      return null;
+    case "calendar":
+      return calSelected.value;
+    default:
+      return view.value.businessDate;
+  }
+});
+
+/**
+ * 这里能不能加待办。
+ * 日历页签下必须先点一个日期 —— 不然不知道该加到哪天。
+ */
+const canAddHere = computed(
+  () => activeTab.value !== "calendar" || calSelected.value !== null,
+);
+
+/** 把 `2026-10-15` 说成「10月15日」 */
+function friendlyDate(key: DateKey): string {
+  const d = fromDateKey(key);
+  return `${d.getMonth() + 1}月${d.getDate()}日`;
+}
+
 const placeholder = computed(() => {
   switch (activeTab.value) {
     case "tomorrow":
       return "添加明天的事，如 10:00 客户拜访";
     case "inbox":
       return "随手记一条，之后可以排期…";
-    case "calendar":
-      return "";
+    case "calendar": {
+      const d = calSelected.value;
+      return d ? `添加到 ${friendlyDate(d)}，如 9:30 交周报` : "";
+    }
     default:
       return "添加今天的事，如 9:30 交周报";
   }
@@ -225,12 +261,9 @@ async function submitDraft() {
   const { title, time } = parseDraft(raw);
   if (!title) return;
 
-  const date: DateKey | null =
-    activeTab.value === "tomorrow"
-      ? view.value.tomorrowDate
-      : activeTab.value === "inbox"
-        ? null
-        : view.value.businessDate;
+  const date = draftTargetDate.value;
+  // 日历页签下没选日期就没有目标，静默返回（界面这时也不会显示输入框）
+  if (date === null && activeTab.value !== "inbox") return;
 
   const ok = await store.addTodo({ title, date, time });
 
@@ -238,7 +271,9 @@ async function submitDraft() {
   // 失败时保留内容 —— 用户不用重打一遍，而且"字还在"本身就是一种反馈。
   if (ok) {
     draft.value = "";
-    store.flashNotice(`已添加「${title}」`);
+    store.flashNotice(
+      date ? `已添加「${title}」到 ${friendlyDate(date)}` : `已添加「${title}」`,
+    );
     // 接着记下一条：点按钮会让输入框失焦，这里主动还回去
     draftEl.value?.focus();
     void grabKeyboard();
@@ -441,7 +476,7 @@ function shiftMonth(delta: number) {
         </template>
       </div>
 
-      <footer v-if="activeTab !== 'calendar'" class="foot">
+      <footer class="foot">
         <!--
           操作反馈。用户反馈过"点了回车没有任何反应"——
           所以每一次写操作都必须在这里留下看得见的一句话：
@@ -450,7 +485,7 @@ function shiftMonth(delta: number) {
         <p v-if="lastError" class="alert" role="alert">⚠ {{ lastError }}</p>
         <p v-else-if="notice" class="toast" role="status">✓ {{ notice }}</p>
 
-        <div class="add-row">
+        <div v-if="canAddHere" class="add-row">
           <input
             ref="draftEl"
             v-model="draft"
@@ -477,6 +512,9 @@ function shiftMonth(delta: number) {
             @click="submitDraft"
           >添加</button>
         </div>
+        <!-- 日历页签下没点日期时，明确告诉用户下一步该做什么，
+             而不是把输入框藏起来让人以为"这里不能加" -->
+        <p v-else class="foot-hint">点日历上的某一天，就能给那天加待办</p>
       </footer>
     </section>
   </div>
@@ -925,6 +963,14 @@ body {
   flex: none;
   padding: 8px 10px 10px;
   border-top: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.foot-hint {
+  margin: 2px 2px 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #b6c2d2;
+  text-align: center;
 }
 
 .add-row {
