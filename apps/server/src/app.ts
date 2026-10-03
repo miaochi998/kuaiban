@@ -11,12 +11,14 @@
  * 服务端本来就只有密文/不透明载荷，这里再守住一次，两道门。
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
+import { createReadStream } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SyncRequest } from "@kuaiban/core";
 import { passwordProblem } from "./auth.ts";
+import type { ReleaseStore } from "./releases.ts";
 import { Store, StoreError, type ServerUser } from "./store.ts";
 
 /** 登录令牌有效期：30 天。桌面挂件不该天天让用户重新登录 */
@@ -36,13 +38,18 @@ const LOGIN_MAX_FAILURES = 10;
  * 服务端启动时读进内存直接发。管理员在浏览器里打开就能用，不用装任何东西。
  * 这和整个服务端"不要第三方运行时依赖"的思路是一致的。
  */
-const ADMIN_HTML = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), "..", "public", "admin.html"),
-  "utf8",
-);
+const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
 
-/** 管理后台的地址。放根路径，管理员好记 */
-const ADMIN_PATHS = new Set(["/", "/admin", "/admin/", "/index.html"]);
+function readPage(name: string): string {
+  return readFileSync(join(PUBLIC_DIR, name), "utf8");
+}
+
+/** 发布下载页（公开，任何人都能看）—— 放根路径，发个链接就行 */
+const DOWNLOAD_HTML = readPage("index.html");
+
+/** 管理后台。**不放在根路径** —— 根路径给了下载页，管理员走 /admin */
+const ADMIN_HTML = readPage("admin.html");
+const ADMIN_PATHS = new Set(["/admin", "/admin/"]);
 
 function sendHtml(res: ServerResponse, html: string): void {
   res.writeHead(200, {
@@ -157,11 +164,13 @@ function publicUser(user: ServerUser) {
 
 export interface AppOptions {
   store: Store;
+  /** 发布目录与对外域名。不传就没有下载页数据（接口返回空，页面显示"即将推出"） */
+  releases?: ReleaseStore;
   /** 关闭登录限流（测试用） */
   disableRateLimit?: boolean;
 }
 
-export function createApp({ store, disableRateLimit = false }: AppOptions): Server {
+export function createApp({ store, releases, disableRateLimit = false }: AppOptions): Server {
   /** 登录失败计数：`用户名` → { 次数, 窗口到期时刻 }。重启即清空，够用 */
   const failures = new Map<string, { count: number; resetAt: number }>();
 
@@ -192,6 +201,20 @@ export function createApp({ store, disableRateLimit = false }: AppOptions): Serv
     // ── 健康检查 ──
     if (method === "GET" && path === "/api/health") {
       return { ok: true };
+    }
+
+    // ── 发布下载页的数据（公开，不需要登录）──
+    // 没有发布目录时也返回结构完整的空清单：页面要能优雅地显示"即将推出"，
+    // 而不是转圈或者报错。
+    if (method === "GET" && path === "/api/releases") {
+      return (
+        releases?.publicListing() ?? {
+          version: null,
+          releasedAt: null,
+          notes: null,
+          platforms: [],
+        }
+      );
     }
 
     // ── 登录 ──
@@ -339,9 +362,46 @@ export function createApp({ store, disableRateLimit = false }: AppOptions): Serv
 
         const url = new URL(req.url ?? "/", "http://localhost");
 
-        // 管理后台页面（静态，不需要登录态；里面的数据接口才需要）
+        // 发布下载页（公开）
+        if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
+          sendHtml(res, DOWNLOAD_HTML);
+          return;
+        }
+
+        // 管理后台（静态，不需要登录态；里面的数据接口才需要）
         if (req.method === "GET" && ADMIN_PATHS.has(url.pathname)) {
           sendHtml(res, ADMIN_HTML);
+          return;
+        }
+
+        // ── 安装包下载 ──
+        const download = /^\/downloads\/(.+)$/.exec(url.pathname);
+        if (req.method === "GET" && download) {
+          const file = releases?.resolveFile(decodeURIComponent(download[1]!));
+          if (!file) {
+            res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+            res.end("没有这个文件");
+            return;
+          }
+          const size = statSync(file).size;
+          res.writeHead(200, {
+            "content-type": "application/octet-stream",
+            "content-length": size,
+            "content-disposition": `attachment; filename="${encodeURIComponent(basename(file))}"`,
+            "x-content-type-options": "nosniff",
+          });
+          createReadStream(file).pipe(res);
+          return;
+        }
+
+        // ── 自动更新清单（Tauri 的格式，改不了）──
+        if (req.method === "GET" && url.pathname === "/updates/latest.json") {
+          const manifest = releases?.updaterManifest();
+          if (!manifest) {
+            send(res, 404, { error: "还没有发布任何版本" });
+            return;
+          }
+          send(res, 200, manifest);
           return;
         }
         const body = req.method === "POST" ? await readBody(req) : {};

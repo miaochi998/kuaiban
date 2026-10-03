@@ -336,6 +336,21 @@ e2e 新增 6 个日历用例（原"日历不该能加"的用例已改写），�
 【实测证据】跑 0.1.0 的应用，日志显示"清单已生成：0.1.1"→"发送 KuaiBan.app.tar.gz（3.1 MB）"，即应用自己完成了检查与下载。
 【环境约束 / 坑】1) 打签名的环境变量是 `TAURI_SIGNING_PRIVATE_KEY`（直接给路径），**不是** `TAURI_SIGNING_PRIVATE_KEY_PATH` —— 用错时产物照样生成、只是没 .sig，到签名那步才报错。2) **Tauri 拒绝非 https 的更新地址**（"must use a secure protocol like https"，安全设计）；本地测试必须加 `"dangerousInsecureTransportProtocol": true`，**该开关只允许出现在 tauri.local-update.conf.json，正式配置绝不可有**。3) macOS 应用的可执行文件名为 Cargo 的 bin 名（desktop），不是 productName。
 【状态】版本号目前停在 0.1.1（验证更新时改的）。全仓 535 个测试。部署仍未开始——用户要求本地全跑通再谈部署。
+- [2026-10-04 01:12] [工作记录] 签名私钥改为跟随服务器数据 + 一键发版脚本（b8dc926） — commit b8dc926。用户反对"要用户保存私钥"（原话："不要让我保存私钥，因为这一定会导致丢失，过了很长时间后一定会遗忘存在哪里了"）——这个判断成立，已改设计。
+
+【已实测确认的硬约束】**Tauri 的 updater 强制要求签名，无法去掉**：把 `plugins.updater.pubkey` 从 tauri.conf.json 删掉后打包直接失败，报 `failed to parse updater plugin configuration: missing field 'pubkey'`。所以"不要签名来省掉密钥管理"这条路不存在。
+
+【新方案：私钥与服务器数据同目录，用户无需记住任何文件】私钥放在 `$KUAIBAN_DATA_DIR/kuaiban-updater.key`（本机为 `~/Library/Application Support/com.kuaiban.server/`），与 kuaiban.db 并列。**理由：用户本来就必须备份服务器数据（丢了所有人的待办），让私钥搭同一趟备份车，就消除了"额外记住一个文件"这件事**。查找顺序：`KUAIBAN_UPDATER_KEY` 环境变量 → 服务器数据目录 → `./.keys/`（已 gitignore）→ `~/.tauri/`。
+
+【发版脚本 scripts/release.mjs】`node scripts/release.mjs <版本号>` 自动完成改版本号（tauri.conf.json + Cargo.toml）、打包、签名、生成带签名的 latest.json。用户全程不碰私钥。首次使用时若找不到私钥会自动生成并把公钥写进 tauri.conf.json。`--rotate-key` 换钥匙。
+
+【丢失后的恢复路径（已做进脚本提示）】不是灾难而是一次性麻烦：换新钥匙后**手动给所有人装一次新版本**（已装客户端里烧的是旧公钥，换钥匙它不认），之后自动更新照常。脚本会在生成新钥匙时直接打印这段说明。
+
+【红线，写进文档】**绝不把私钥提交进仓库**——有它就能签出装到全公司机器上的程序，仓库泄露等于交出所有人的电脑。
+
+【上一轮已记的坑（不重复）】`TAURI_SIGNING_PRIVATE_KEY`（路径）不是 `_PATH` 变体；Tauri 拒绝非 https 端点，本地测试需 `dangerousInsecureTransportProtocol`（仅限本地配置）。
+
+【状态】全仓 535 个测试。部署仍未开始——用户要求本地全跑通再谈部署。
 
 ## 经验教训 Lessons Learned
 
@@ -463,3 +478,5 @@ unsafe { let w = ptr as *mut AnyObject; let _: () = msg_send![w, setAcceptsMouse
 3) **验证"应用自更新"不必部署**：打两个版本（旧版另存到 /tmp 运行，新版进 bundle 目录），起一个本地静态服务器发带签名的 latest.json，跑旧版即可看到它检查+下载。判断是否成功看**服务器日志有没有收到请求**，比截图可靠。
 4) 本地测更新时，**两个版本的打包都必须带上本地 endpoint 配置**，否则旧版会去连生产地址、整个验证白做。
 5) macOS 上 .app 的可执行文件名是 **Cargo 的 bin 名**（本项目是 `desktop`），不是 productName（KuaiBan）；直接跑二进制看 stderr 是排查"应用起不来"最快的手段。
+- [2026-10-04 01:12] [经验教训] 不要设计"让用户自己保存凭据"的机制；搭到用户本就要备份的东西上 — **不要设计"让用户自己保存某个文件/凭据"的机制**——用户会明确反对，且长期必然丢失。本轮用户原话："不要让我保存私钥，因为这一定会导致丢失，过了很长时间后一定会遗忘存在哪里了"。
+可行的替代做法：**把凭据搭到用户本来就必须备份的东西上**（本项目是服务器数据目录），并提供一个"一条命令全自动"的入口，让用户全程不接触它。若确实无法消除，就必须**明确告知丢失后的代价是有界的一次性麻烦**（本项目：换钥匙 + 全员重装一次），而不是灾难。

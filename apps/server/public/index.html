@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>快办 · 下载</title>
+<style>
+  /* 单文件、零依赖 —— 和这个工具的整体风格一致 */
+  :root {
+    --bg: #f5f7fa;
+    --card: #fff;
+    --line: #e6eaf1;
+    --text: #16202e;
+    --dim: #77839a;
+    --blue: #3b6ef6;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.7 -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 56px 20px 72px; }
+
+  header { margin-bottom: 34px; }
+  h1 { margin: 0 0 8px; font-size: 30px; letter-spacing: -0.02em; }
+  .tagline { margin: 0; color: var(--dim); font-size: 15px; }
+
+  .version {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 16px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    background: #eaf0fe;
+    color: #31519b;
+    font-size: 13px;
+  }
+  .version .dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; }
+
+  .section-title {
+    margin: 30px 0 12px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--dim);
+    letter-spacing: 0.04em;
+  }
+
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+
+  .card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 18px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+  }
+  .card.available:hover {
+    border-color: #c3d3fb;
+    box-shadow: 0 6px 20px rgba(59, 110, 246, 0.09);
+    transform: translateY(-1px);
+  }
+  .card.todo { opacity: 0.55; }
+
+  .icon {
+    width: 44px;
+    height: 44px;
+    flex: none;
+    display: grid;
+    place-items: center;
+    border-radius: 11px;
+    background: #eef2f9;
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .card.available .icon { background: #eaf0fe; }
+
+  .meta { flex: 1; min-width: 0; }
+  .name { font-weight: 600; font-size: 15px; }
+  .hint { color: var(--dim); font-size: 12.5px; margin-top: 1px; }
+
+  .size { color: var(--dim); font-size: 12px; margin-top: 3px; }
+
+  .btn {
+    flex: none;
+    padding: 8px 18px;
+    border-radius: 9px;
+    background: var(--blue);
+    color: #fff;
+    font-size: 13.5px;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .btn:hover { background: #2f5fe0; }
+  .btn.soon {
+    background: #eef1f6;
+    color: #9aa6b8;
+    cursor: default;
+  }
+
+  .empty {
+    padding: 22px;
+    background: var(--card);
+    border: 1px dashed var(--line);
+    border-radius: var(--radius);
+    color: var(--dim);
+    text-align: center;
+    font-size: 14px;
+  }
+
+  .notes {
+    margin-top: 12px;
+    padding: 14px 18px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    font-size: 13.5px;
+    color: #47536b;
+    white-space: pre-wrap;
+  }
+
+  .steps { margin: 10px 0 0; padding-left: 20px; color: var(--dim); font-size: 13.5px; }
+  .steps li { margin: 3px 0; }
+
+  footer {
+    margin-top: 46px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    color: var(--dim);
+    font-size: 12.5px;
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  footer a { color: var(--dim); }
+  footer a:hover { color: var(--blue); }
+  .privacy { flex: 1; min-width: 240px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>快办</h1>
+    <p class="tagline">贴在屏幕边上的待办清单 · 到点强提醒 · 多设备同步 · 数据存在自己公司</p>
+    <div class="version" id="version" hidden>
+      <span class="dot"></span><span id="versionText"></span>
+    </div>
+  </header>
+
+  <div class="section-title">电脑端</div>
+  <div class="grid" id="desktop"></div>
+
+  <div class="section-title">手机端</div>
+  <div class="grid" id="mobile"></div>
+
+  <div id="notes" class="notes" hidden></div>
+
+  <div class="section-title">装好之后</div>
+  <ol class="steps">
+    <li>打开应用，用管理员给你的<b>登录名和初始密码</b>登录</li>
+    <li>首次登录会要求你改密码</li>
+    <li>以后它会自己检查更新，不用再来这个页面</li>
+  </ol>
+
+  <footer>
+    <span class="privacy">
+      数据存在公司自己的服务器上，不经过任何第三方。
+    </span>
+    <a href="/admin">管理后台</a>
+  </footer>
+</div>
+
+<script>
+// 图标用**纯文字**：不引图标库、也不依赖系统字体里有没有某个符号。
+// （第一版我用了  和 🪟 这类字符，结果在一部分机器上渲染成空白方块 ——
+//   内网、老系统上这种风险不值得冒。）
+const ICONS = {
+  "macos-arm64": "Mac",
+  "macos-intel": "Mac",
+  windows: "Win",
+  android: "安卓",
+  harmony: "鸿蒙",
+  ios: "iOS",
+};
+
+/**
+ * 猜访问者现在用的是什么系统，把对应那一项标出来。
+ *
+ * ⚠️ **macOS 上猜不出芯片**：Chrome / Safari 在 Apple 芯片的机器上，UA 里照样
+ * 写着 `Intel Mac OS X`（为了兼容性把 UA 冻住了）。所以这里**只在能确定时**才标
+ * "你正在用的" —— 猜错会让人下错安装包，那比不标糟糕得多。
+ */
+function guessVisitor() {
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad/.test(ua)) return "ios";
+  if (/Android/.test(ua)) return "android";
+  if (/Win/.test(ua)) return "windows";
+  // Mac：芯片未知 → 两个 macOS 项都不标，让用户自己看一眼"关于本机"
+  return null;
+}
+
+/** 访问者是不是在用 Mac（用来给一句提示，而不是替他选） */
+function isMac() {
+  return /Mac/.test(navigator.userAgent) && !/iPhone|iPad/.test(navigator.userAgent);
+}
+
+function renderCard(p, mine) {
+  const el = document.createElement("div");
+  el.className = "card " + (p.available ? "available" : "todo");
+
+  const icon = document.createElement("div");
+  icon.className = "icon";
+  icon.textContent = ICONS[p.key] ?? "—";
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+
+  const name = document.createElement("div");
+  name.className = "name";
+  name.textContent = p.label + (p.key === mine ? " · 你正在用的" : "");
+
+  const hint = document.createElement("div");
+  hint.className = "hint";
+  hint.textContent = p.hint;
+
+  meta.append(name, hint);
+
+  if (p.sizeLabel) {
+    const size = document.createElement("div");
+    size.className = "size";
+    size.textContent = p.sizeLabel;
+    meta.appendChild(size);
+  }
+
+  el.append(icon, meta);
+
+  if (p.available) {
+    const a = document.createElement("a");
+    a.className = "btn";
+    a.href = p.url;
+    a.textContent = "下载";
+    el.appendChild(a);
+  } else {
+    const soon = document.createElement("span");
+    soon.className = "btn soon";
+    soon.textContent = "即将推出";
+    el.appendChild(soon);
+  }
+
+  // 「你正在用的」排最前面，省得找
+  if (p.key === mine) el.style.order = "-1";
+  return el;
+}
+
+(async () => {
+  const mine = guessVisitor();
+  const desktop = document.getElementById("desktop");
+  const mobile = document.getElementById("mobile");
+
+  let data;
+  try {
+    data = await (await fetch("/api/releases")).json();
+  } catch {
+    data = { platforms: [] };
+  }
+
+  const platforms = data.platforms ?? [];
+
+  if (platforms.length === 0) {
+    desktop.innerHTML = '<div class="empty">服务器上还没有发布任何版本</div>';
+    mobile.innerHTML = "";
+    return;
+  }
+
+  const version = document.getElementById("version");
+  if (data.version) {
+    document.getElementById("versionText").textContent =
+      "最新版本 " + data.version + (data.releasedAt ? " · " + data.releasedAt.slice(0, 10) : "");
+    version.hidden = false;
+  }
+
+  if (data.notes) {
+    const notes = document.getElementById("notes");
+    notes.textContent = data.notes;
+    notes.hidden = false;
+  }
+
+  for (const p of platforms) {
+    const target = p.kind === "mobile" ? mobile : desktop;
+    target.appendChild(renderCard(p, mine));
+  }
+
+  // Mac 用户：不替他选芯片，但告诉他怎么确认
+  if (isMac()) {
+    const tip = document.createElement("div");
+    tip.className = "notes";
+    tip.style.marginTop = "10px";
+    tip.textContent =
+      "不确定自己是哪种芯片？打开「系统设置 → 通用 → 关于本机」看一眼「芯片」：" +
+      "写着 Apple M… 就下 Apple 芯片版，写着 Intel 就下 Intel 版。";
+    desktop.parentNode.insertBefore(tip, desktop.nextSibling);
+  }
+})();
+</script>
+</body>
+</html>

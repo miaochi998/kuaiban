@@ -204,11 +204,54 @@ const manifest = {
 const outPath = join(BUNDLE_DIR, "latest.json");
 writeFileSync(outPath, JSON.stringify(manifest, null, 2) + "\n");
 
+// ── 同时更新"发布下载页"用的清单 ──
+// 服务端只读它、不猜 —— 猜"哪个文件最新"猜错了就会给人发旧版本。
+const releasesDir = join(DATA_DIR, "releases");
+mkdirSync(releasesDir, { recursive: true });
+
+const downloads = {};
+for (const a of artifacts) {
+  if (a.name.endsWith(".app.tar.gz")) continue; // 更新包不给用户手动下
+  downloads[/arm64|aarch64/.test(a.name) || process.arch === "arm64" ? "macos-arm64" : "macos-intel"] = {
+    file: a.name,
+  };
+}
+// DMG 是给人手动装的；.app.tar.gz 是给自动更新用的，两者都要复制过去
+for (const dir of ["macos", "nsis", "msi", "dmg"]) {
+  const from = join(BUNDLE_DIR, dir);
+  if (!existsSync(from)) continue;
+  for (const name of readdirSync(from)) {
+    if (!/\.(dmg|exe|msi|apk|zip|tar\.gz)$/.test(name)) continue;
+    copyFileSync(join(from, name), join(releasesDir, name));
+  }
+}
+
+// 从文件名里认出 DMG，让它出现在下载页上
+for (const name of readdirSync(releasesDir)) {
+  if (!name.endsWith(".dmg")) continue;
+  const key = /aarch64|arm64/.test(name) ? "macos-arm64" : "macos-intel";
+  downloads[key] = { file: name };
+}
+
+const releasesManifest = {
+  version,
+  releasedAt: new Date().toISOString(),
+  notes: `快办 ${version}`,
+  downloads,
+  updates: Object.fromEntries(
+    artifacts.map((a) => [a.target, { file: a.name, signature: a.signature }]),
+  ),
+};
+writeFileSync(join(releasesDir, "releases.json"), JSON.stringify(releasesManifest, null, 2) + "\n");
+
 console.log("");
 console.log("═".repeat(64));
 console.log(`✅ ${version} 打好了，已签名`);
 for (const a of artifacts) console.log(`   ${a.file}`);
 console.log("");
-console.log(`更新清单草稿：${outPath}`);
-console.log("（里面的 url 还是占位符，上传到服务器后替换成真实地址即可）");
+console.log(`更新清单：${outPath}`);
+console.log(`发布清单：${join(releasesDir, "releases.json")}`);
+console.log(`安装包已就位：${releasesDir}`);
+console.log("");
+console.log("下载页会立刻反映这个版本 —— 服务端读的就是上面那份清单。");
 console.log("═".repeat(64));

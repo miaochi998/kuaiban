@@ -170,16 +170,43 @@ class Device {
 
 // ─────────────────────────────────────────────────────────────
 
+describe("发布下载", () => {
+  it("/ 是发布下载页，/admin 是管理后台 —— 两个页面不要搞混", async () => {
+    const home = await (await fetch(`${base}/`)).text();
+    expect(home).toContain("快办");
+    expect(home).toContain("下载");
+    expect(home).not.toContain("管理员登录");
+
+    const admin = await (await fetch(`${base}/admin`)).text();
+    expect(admin).toContain("管理员登录");
+    expect(admin).toContain("看不到任何人的待办内容");
+  });
+
+  it("没有任何发布时，接口返回结构完整的空清单（页面要能优雅显示「即将推出」）", async () => {
+    // 这个测试实例没配发布目录
+    const res = await fetch(`${base}/api/releases`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toMatchObject({ version: null, platforms: [] });
+  });
+
+  it("更新清单在没有发布时返回 404 而不是半个空壳", async () => {
+    expect((await fetch(`${base}/updates/latest.json`)).status).toBe(404);
+  });
+
+  it("下载一个不存在的文件给 404", async () => {
+    expect((await fetch(`${base}/downloads/nope.dmg`)).status).toBe(404);
+  });
+});
+
 describe("管理后台页面", () => {
-  it("/ 与 /admin 都能打开管理后台", async () => {
-    for (const path of ["/", "/admin"]) {
-      const res = await fetch(`${base}${path}`);
-      expect(res.status, path).toBe(200);
-      expect(res.headers.get("content-type")).toContain("text/html");
-      const html = await res.text();
-      expect(html).toContain("管理后台");
-      expect(html).toContain("看不到任何人的待办内容");
-    }
+  it("/admin 能打开管理后台", async () => {
+    const res = await fetch(`${base}/admin`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const html = await res.text();
+    expect(html).toContain("管理后台");
+    expect(html).toContain("看不到任何人的待办内容");
   });
 
   it("页面里没有任何「读取某人待办」的调用 —— 连尝试的口子都不留", async () => {

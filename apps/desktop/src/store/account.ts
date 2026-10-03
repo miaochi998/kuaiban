@@ -22,18 +22,14 @@ const STORAGE_KEY = "kuaiban.account.v1";
 /**
  * 服务器地址：**构建时就烧进安装包里，用户不需要知道、也没法填**。
  *
- * 一开始我把它做成了设置里的一个输入框 —— 用户一看就反问
+ * 值来自 `lib/endpoints.ts` —— 那里是正式域名的唯一一处定义。
+ * 一开始我把它做成了设置里的输入框，用户一看就反问
  * "难道还需要用户自己填服务器地址吗？"。确实不该：
- * 这是个公司内部工具，服务器在哪儿是**管理员部署时决定的事**，
- * 让每个员工去手抄一个 URL 既不合理、也一定会有人填错。
- *
- * 打包时用环境变量指定：
- *     VITE_KUAIBAN_SERVER=https://kuaiban.example.com pnpm build
- * 不指定时回退到本机地址，方便本地开发。
+ * 这是公司内部工具，服务器在哪儿是管理员部署时决定的事。
  */
-export const SERVER_URL: string =
-  (import.meta.env?.VITE_KUAIBAN_SERVER as string | undefined)?.replace(/\/+$/, "") ||
-  "http://127.0.0.1:8787";
+import { SERVER_URL } from "../lib/endpoints";
+
+export { SERVER_URL };
 
 interface StoredAccount {
   token: string;
