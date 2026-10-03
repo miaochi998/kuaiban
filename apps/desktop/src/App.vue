@@ -180,8 +180,14 @@ const draft = ref("");
 
 // ── 到点提醒（引擎在 store/reminders.ts）──
 const reminders = useReminderStore();
-const { active: activeReminders, activeCount, missedCount, settings: reminderSettings, inQuietHours } =
-  reminders;
+const {
+  active: activeReminders,
+  activeCount,
+  missedCount,
+  settings: reminderSettings,
+  inQuietHours,
+  morningSummary,
+} = reminders;
 
 const showSettings = ref(false);
 
@@ -406,6 +412,20 @@ function shiftMonth(delta: number) {
         @mute-all="reminders.muteAll"
       />
 
+      <!--
+        早上汇总：没定时间的事永远等不到"到点"，只能在这个时刻被提一次。
+        不逐条打扰，也不响声音 —— 内容就在下面的清单里，这条只是把注意力引过去。
+      -->
+      <div v-if="morningSummary.visible" class="morning-summary">
+        <span class="ms-text">☀ {{ morningSummary.text }}</span>
+        <button
+          class="ms-close"
+          type="button"
+          title="知道了"
+          @click="reminders.dismissMorningSummary()"
+        >知道了</button>
+      </div>
+
       <nav class="tabs">
         <button
           v-for="t in TABS"
@@ -443,6 +463,16 @@ function shiftMonth(delta: number) {
               type="button"
               @click="reminders.setSoundEnabled(!reminderSettings.soundEnabled)"
             >{{ reminderSettings.soundEnabled ? "开" : "关" }}</button>
+          </div>
+
+          <div class="set-row">
+            <span class="set-label">早上汇总没定时间的事</span>
+            <button
+              class="set-toggle"
+              :class="{ on: reminderSettings.allDaySummaryEnabled }"
+              type="button"
+              @click="reminders.setAllDaySummaryEnabled(!reminderSettings.allDaySummaryEnabled)"
+            >{{ reminderSettings.allDaySummaryEnabled ? "开" : "关" }}</button>
           </div>
 
           <div class="set-row">
@@ -1095,6 +1125,43 @@ body {
 .cal-dot[data-n="3"] {
   width: 14px;
   border-radius: 2px;
+}
+
+/* 早上汇总横幅 */
+.morning-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  margin: 0 8px 8px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: rgba(59, 110, 246, 0.08);
+  border: 1px solid rgba(59, 110, 246, 0.16);
+}
+
+.ms-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: #3b6ef6;
+  font-weight: 600;
+}
+
+.ms-close {
+  flex: none;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(59, 110, 246, 0.14);
+  font-family: inherit;
+  font-size: 10px;
+  color: #3b6ef6;
+  cursor: pointer;
+}
+
+.ms-close:hover {
+  background: rgba(59, 110, 246, 0.24);
 }
 
 /* 设置面板 */

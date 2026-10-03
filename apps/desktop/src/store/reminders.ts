@@ -25,10 +25,19 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   DEFAULT_QUIET_HOURS,
   ESCALATE_AFTER_MS,
+  allDayTodosOn,
   dueReminders,
   isQuietTime,
+  type DateKey,
   type QuietHours,
+  type TimeOfDay,
+  type Todo,
 } from "@kuaiban/core";
+import {
+  DEFAULT_SUMMARY_TIME,
+  shouldSummarize,
+  summaryText,
+} from "../lib/morning-summary";
 import {
   activeReminders,
   escalating,
@@ -62,6 +71,9 @@ export const SNOOZE_LONG_MS = 60 * 60_000;
 export interface ReminderSettings {
   soundEnabled: boolean;
   quietHours: QuietHours;
+  /** 全天事项（没定时间的）要不要在早上汇总一次 */
+  allDaySummaryEnabled: boolean;
+  allDaySummaryTime: TimeOfDay;
 }
 
 const SETTINGS_KEY = "kuaiban.reminder.settings.v1";
@@ -69,6 +81,8 @@ const SETTINGS_KEY = "kuaiban.reminder.settings.v1";
 const DEFAULT_SETTINGS: ReminderSettings = {
   soundEnabled: true,
   quietHours: DEFAULT_QUIET_HOURS,
+  allDaySummaryEnabled: true,
+  allDaySummaryTime: DEFAULT_SUMMARY_TIME,
 };
 
 function loadSettings(): ReminderSettings {
@@ -82,6 +96,9 @@ function loadSettings(): ReminderSettings {
         parsed.quietHours && typeof parsed.quietHours === "object"
           ? parsed.quietHours
           : DEFAULT_SETTINGS.quietHours,
+      allDaySummaryEnabled:
+        parsed.allDaySummaryEnabled ?? DEFAULT_SETTINGS.allDaySummaryEnabled,
+      allDaySummaryTime: parsed.allDaySummaryTime ?? DEFAULT_SETTINGS.allDaySummaryTime,
     };
   } catch {
     return DEFAULT_SETTINGS;
@@ -113,6 +130,27 @@ const escalated = ref<ReadonlySet<string>>(new Set());
 /** 由轮询更新的"当前时刻"。单独放一个是为了让 computed 能跟着刷新 */
 const tickAt = ref(Date.now());
 
+const LAST_SUMMARY_KEY = "kuaiban.morningSummary.lastDay.v1";
+
+function loadLastSummaryDay(): DateKey | null {
+  try {
+    return globalThis.localStorage?.getItem(LAST_SUMMARY_KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function saveLastSummaryDay(day: DateKey): void {
+  try {
+    globalThis.localStorage?.setItem(LAST_SUMMARY_KEY, day);
+  } catch {
+    /* 存不下就明天再汇总一次，不影响使用 */
+  }
+}
+
+/** 已经汇总过的业务日 —— 一天只汇总一次，重启软件也不再重复 */
+const lastSummarizedDay = ref<DateKey | null>(loadLastSummaryDay());
+
 let timer: ReturnType<typeof setInterval> | null = null;
 let holdTimer: ReturnType<typeof setTimeout> | null = null;
 let previousKeys: ReadonlySet<string> = new Set();
@@ -143,6 +181,33 @@ const inQuietHours = computed(() =>
 
 /** 该不该出声：开关打开、且不在免打扰时段 */
 const audible = computed(() => settings.value.soundEnabled && !inQuietHours.value);
+
+/** 今天还没做、也没定时间的事 —— 它们永远等不到"到点"，只能靠早上汇总被想起 */
+const allDayToday = computed<Todo[]>(() =>
+  allDayTodosOn(todoStore.todos.value, todoStore.view.value.businessDate),
+);
+
+/** 早上汇总（全天事项不逐条打扰，只在约定时刻汇总一次） */
+const morningSummary = computed(() => {
+  const count = allDayToday.value.length;
+  const visible =
+    settings.value.allDaySummaryEnabled &&
+    shouldSummarize({
+      allDayCount: count,
+      businessDate: todoStore.view.value.businessDate,
+      now: new Date(tickAt.value),
+      summaryTime: settings.value.allDaySummaryTime,
+      lastSummarizedDay: lastSummarizedDay.value,
+    });
+  return { visible, count, text: summaryText(count) };
+});
+
+/** 用户点掉早上汇总：今天不再显示 */
+export function dismissMorningSummary(): void {
+  const day = todoStore.view.value.businessDate;
+  lastSummarizedDay.value = day;
+  saveLastSummaryDay(day);
+}
 
 // ─────────────────────────────────────────────────────────────
 // 平台效果
@@ -332,6 +397,11 @@ export function setQuietEnabled(enabled: boolean): void {
   saveSettings(settings.value);
 }
 
+export function setAllDaySummaryEnabled(enabled: boolean): void {
+  settings.value = { ...settings.value, allDaySummaryEnabled: enabled };
+  saveSettings(settings.value);
+}
+
 /** 试听：让用户确认声音能不能听见 */
 export function previewChime(): void {
   playChime();
@@ -345,6 +415,8 @@ export function useReminderStore() {
     missedCount,
     settings,
     inQuietHours,
+    morningSummary,
+    dismissMorningSummary,
     // 动作
     completeReminder,
     snoozeReminder,
@@ -353,6 +425,7 @@ export function useReminderStore() {
     muteAll,
     setSoundEnabled,
     setQuietEnabled,
+    setAllDaySummaryEnabled,
     previewChime,
   };
 }

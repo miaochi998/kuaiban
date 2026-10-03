@@ -525,3 +525,58 @@ test("设置里可以开关免打扰", async ({ page }) => {
   await dnd.click();
   await expect(dnd).not.toHaveClass(/on/);
 });
+
+// ─────────────────────────────────────────────────────────────
+// 早上汇总：没定时间的事永远等不到"到点"，只能被汇总提一次
+// ─────────────────────────────────────────────────────────────
+
+test("过了汇总时刻，会提醒今天有几件没定时间的事", async ({ page }) => {
+  const errors = collectErrors(page);
+  await page.fill(".add", "买咖啡豆");
+  await page.press(".add", "Enter");
+
+  const banner = page.locator(".morning-summary");
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText("没定时间");
+  await expect(banner).toContainText("1");
+  expect(errors).toEqual([]);
+});
+
+test("有几件就说几件", async ({ page }) => {
+  for (const t of ["买咖啡豆", "取快递", "交水电费"]) {
+    await page.fill(".add", t);
+    await page.press(".add", "Enter");
+  }
+  await expect(page.locator(".morning-summary")).toContainText("3");
+});
+
+test("没有没定时间的事时，早上汇总不出现", async ({ page }) => {
+  await page.fill(".add", "9:30 有时间的");
+  await page.press(".add", "Enter");
+
+  await expect(page.locator(".row", { hasText: "有时间的" })).toBeVisible();
+  await expect(page.locator(".morning-summary")).toHaveCount(0);
+});
+
+test("点「知道了」后消失，刷新也不会再冒出来（一天只汇总一次）", async ({ page }) => {
+  await page.fill(".add", "买咖啡豆");
+  await page.press(".add", "Enter");
+  await expect(page.locator(".morning-summary")).toBeVisible();
+
+  await page.locator(".ms-close").click();
+  await expect(page.locator(".morning-summary")).toHaveCount(0);
+
+  await page.reload();
+  await expect(page.locator(".widget.expanded")).toBeVisible();
+  await expect(page.locator(".morning-summary")).toHaveCount(0);
+});
+
+test("设置里可以关掉早上汇总", async ({ page }) => {
+  await page.locator(".pin", { hasText: "⚙" }).click();
+
+  const row = page.locator(".set-row", { hasText: "早上汇总" });
+  await expect(row.locator(".set-toggle")).toHaveClass(/on/); // 默认开
+
+  await row.locator(".set-toggle").click();
+  await expect(row.locator(".set-toggle")).not.toHaveClass(/on/);
+});

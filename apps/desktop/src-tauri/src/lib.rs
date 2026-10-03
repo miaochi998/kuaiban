@@ -627,6 +627,16 @@ fn migrations() -> Vec<Migration> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // ⚠️ 单实例插件必须**第一个**注册（插件文档的要求），
+        // 否则它来不及拦住第二个实例，别的插件就已经跑起来了。
+        //
+        // 为什么必须有它：挂件的待办列表是内存副本，两个实例各持一份，
+        // A 里加的待办 B 看不到（要重启才同步）。用户会以为"数据丢了"。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // 第二个实例试图启动时，把已经在跑的那个叫出来 ——
+            // 让用户明白"程序就在这里，不是没反应"。
+            set_expanded_inner(app, true);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
