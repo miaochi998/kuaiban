@@ -170,6 +170,34 @@ class Device {
 
 // ─────────────────────────────────────────────────────────────
 
+describe("管理后台页面", () => {
+  it("/ 与 /admin 都能打开管理后台", async () => {
+    for (const path of ["/", "/admin"]) {
+      const res = await fetch(`${base}${path}`);
+      expect(res.status, path).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/html");
+      const html = await res.text();
+      expect(html).toContain("管理后台");
+      expect(html).toContain("看不到任何人的待办内容");
+    }
+  });
+
+  it("页面里没有任何「读取某人待办」的调用 —— 连尝试的口子都不留", async () => {
+    const html = await (await fetch(`${base}/admin`)).text();
+    // 页面只应该打这几个接口
+    const called = [...html.matchAll(/api\/[a-zA-Z0-9/_${}.+-]*/g)].map((m) => m[0]);
+    for (const path of called) {
+      expect(
+        path.startsWith("/api/login") ||
+          path.startsWith("/api/admin/users") ||
+          path.startsWith("/api/sync") === false,
+        `页面不该调用 ${path}`,
+      ).toBe(true);
+    }
+    expect(html).not.toContain("/todos");
+  });
+});
+
 describe("基础", () => {
   it("健康检查不需要登录", async () => {
     expect((await api("/api/health")).status).toBe(200);

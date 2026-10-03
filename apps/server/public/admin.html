@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>快办 · 管理后台</title>
+<style>
+  /* 单文件、零依赖、零构建 —— 和这个工具的整体风格一致。
+     管理员在浏览器里打开就能用，不用装任何东西。 */
+  :root {
+    --bg: #f6f7f9;
+    --card: #fff;
+    --line: #e5e9f0;
+    --text: #1e293b;
+    --dim: #7c8798;
+    --blue: #3b6ef6;
+    --red: #dc2626;
+    --green: #16a34a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { margin: 0 0 4px; font-size: 20px; }
+  .sub { margin: 0 0 24px; color: var(--dim); font-size: 13px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+  .card h2 { margin: 0 0 14px; font-size: 14px; color: var(--dim); font-weight: 600; }
+  label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 5px; }
+  input {
+    width: 100%;
+    padding: 9px 11px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font: inherit;
+    color: inherit;
+    background: #fbfcfd;
+  }
+  input:focus { outline: none; border-color: var(--blue); background: #fff; }
+  .row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+  .row > * { flex: 1; min-width: 150px; }
+  .row > button { flex: 0 0 auto; }
+  button {
+    padding: 9px 16px;
+    border: none;
+    border-radius: 8px;
+    background: var(--blue);
+    color: #fff;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:hover { filter: brightness(1.07); }
+  button:disabled { background: #c8d2e0; cursor: default; filter: none; }
+  button.ghost { background: #eef1f6; color: #475569; font-weight: 400; }
+  button.danger { background: transparent; color: var(--red); font-weight: 400; }
+  button.danger:hover { background: #fef2f2; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  th { color: var(--dim); font-weight: 500; font-size: 12px; }
+  tr:last-child td { border-bottom: none; }
+  td.actions { text-align: right; white-space: nowrap; }
+  td.actions button { padding: 4px 10px; font-size: 12px; margin-left: 6px; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 5px; font-size: 11px; }
+  .tag.on { background: #ecfdf5; color: var(--green); }
+  .tag.off { background: #fef2f2; color: var(--red); }
+  .tag.admin { background: #eef2ff; color: var(--blue); }
+  .msg { margin-top: 12px; font-size: 13px; }
+  .msg.err { color: var(--red); }
+  .msg.ok { color: var(--green); }
+  .privacy {
+    background: #f0f6ff;
+    border: 1px solid #d6e4ff;
+    color: #31519b;
+    font-size: 12.5px;
+    line-height: 1.7;
+  }
+  .hidden { display: none; }
+  .muted { color: var(--dim); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>快办 · 管理后台</h1>
+  <p class="sub">管理账号。不提供、也无法查看任何人的待办内容。</p>
+
+  <!-- ── 登录 ── -->
+  <section id="login" class="card">
+    <h2>管理员登录</h2>
+    <div class="row">
+      <div><label>登录名</label><input id="u" autocomplete="username" /></div>
+      <div><label>密码</label><input id="p" type="password" autocomplete="current-password" /></div>
+      <button id="go">登录</button>
+    </div>
+    <p id="loginMsg" class="msg err"></p>
+  </section>
+
+  <!-- ── 主界面 ── -->
+  <section id="main" class="hidden">
+    <div class="card privacy">
+      <strong>这里看不到任何人的待办内容。</strong>
+      服务端只存账号信息和「存了多少条」这个数字。管理接口在代码层面就
+      <strong>没有</strong>读取待办内容的路径 —— 不是"我们不看"，而是没有这个口子。
+    </div>
+
+    <div class="card">
+      <h2>新建账号</h2>
+      <div class="row">
+        <div><label>登录名</label><input id="nu" placeholder="拼音 / 工号，2 个字符以上" /></div>
+        <div><label>姓名</label><input id="nn" placeholder="选填" /></div>
+        <div><label>初始密码</label><input id="np" placeholder="至少 8 位" /></div>
+        <button id="create">创建</button>
+      </div>
+      <p id="createMsg" class="msg"></p>
+      <p class="muted">初始密码只能用一次 —— 对方首次登录时会被要求改密码。</p>
+    </div>
+
+    <div class="card">
+      <h2>账号列表</h2>
+      <table>
+        <thead>
+          <tr><th>登录名</th><th>姓名</th><th>状态</th><th>记录数</th><th></th></tr>
+        </thead>
+        <tbody id="users"></tbody>
+      </table>
+      <p id="listMsg" class="msg"></p>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <span class="muted" id="me"></span>
+        <button class="ghost" id="logout" style="flex:0 0 auto">退出登录</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+// 令牌只放内存（关了页面就要重新登录）。
+// 管理后台用得少，换来的是"令牌不会留在任何地方"。
+let token = null;
+
+const $ = (id) => document.getElementById(id);
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body ? "POST" : "GET",
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { authorization: "Bearer " + token } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "请求失败（" + res.status + "）");
+  return data;
+}
+
+function say(el, text, kind) {
+  const node = $(el);
+  node.textContent = text || "";
+  node.className = "msg" + (kind ? " " + kind : "");
+}
+
+async function login() {
+  $("go").disabled = true;
+  say("loginMsg", "");
+  try {
+    const data = await api("/api/login", { username: $("u").value.trim(), password: $("p").value });
+    if (!data.user.isAdmin) throw new Error("这个账号不是管理员");
+    token = data.token;
+    $("p").value = "";
+    $("login").classList.add("hidden");
+    $("main").classList.remove("hidden");
+    $("me").textContent = data.user.displayName + "（" + data.user.username + "）";
+    await refresh();
+  } catch (err) {
+    say("loginMsg", err.message, "err");
+  } finally {
+    $("go").disabled = false;
+  }
+}
+
+async function refresh() {
+  try {
+    const data = await api("/api/admin/users");
+    const tbody = $("users");
+    tbody.innerHTML = "";
+    for (const user of data.users) {
+      const tr = document.createElement("tr");
+
+      const name = document.createElement("td");
+      name.textContent = user.username;
+
+      const display = document.createElement("td");
+      display.textContent = user.displayName || "—";
+
+      const status = document.createElement("td");
+      status.innerHTML =
+        '<span class="tag ' + (user.disabled ? "off" : "on") + '">' +
+        (user.disabled ? "已停用" : "正常") + "</span>" +
+        (user.isAdmin ? ' <span class="tag admin">管理员</span>' : "") +
+        (user.mustChangePassword ? ' <span class="tag off">待改密</span>' : "");
+
+      const count = document.createElement("td");
+      // 只有数字 —— 内容在服务端本来就是密文/不透明载荷，这里也没有读取路径
+      count.textContent = user.recordCount;
+
+      const actions = document.createElement("td");
+      actions.className = "actions";
+
+      const reset = document.createElement("button");
+      reset.className = "ghost";
+      reset.textContent = "重置密码";
+      reset.onclick = async () => {
+        const pw = prompt("给「" + user.username + "」设置新的初始密码（至少 8 位）：");
+        if (!pw) return;
+        try {
+          await api("/api/admin/users/" + encodeURIComponent(user.id) + "/password", { password: pw });
+          say("listMsg", "已重置，对方下次登录要改密码", "ok");
+          await refresh();
+        } catch (err) {
+          say("listMsg", err.message, "err");
+        }
+      };
+      actions.appendChild(reset);
+
+      const toggle = document.createElement("button");
+      toggle.className = user.disabled ? "ghost" : "danger";
+      toggle.textContent = user.disabled ? "启用" : "停用";
+      toggle.onclick = async () => {
+        if (!user.disabled && !confirm("停用「" + user.username + "」？对方会立刻无法登录，但数据保留。")) return;
+        try {
+          await api("/api/admin/users/" + encodeURIComponent(user.id) + "/disabled", { disabled: !user.disabled });
+          await refresh();
+        } catch (err) {
+          say("listMsg", err.message, "err");
+        }
+      };
+      actions.appendChild(toggle);
+
+      tr.append(name, display, status, count, actions);
+      tbody.appendChild(tr);
+    }
+    say("listMsg", "");
+  } catch (err) {
+    say("listMsg", err.message, "err");
+  }
+}
+
+async function create() {
+  say("createMsg", "");
+  try {
+    await api("/api/admin/users", {
+      username: $("nu").value.trim(),
+      displayName: $("nn").value.trim(),
+      password: $("np").value,
+    });
+    $("nu").value = $("nn").value = $("np").value = "";
+    say("createMsg", "已创建。把登录名和初始密码告诉对方即可。", "ok");
+    await refresh();
+  } catch (err) {
+    say("createMsg", err.message, "err");
+  }
+}
+
+$("go").onclick = login;
+$("create").onclick = create;
+$("logout").onclick = () => location.reload();
+for (const id of ["u", "p"]) {
+  $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
+}
+for (const id of ["nu", "nn", "np"]) {
+  $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") create(); });
+}
+</script>
+</body>
+</html>

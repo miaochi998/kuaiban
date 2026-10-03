@@ -11,7 +11,10 @@
  * 服务端本来就只有密文/不透明载荷，这里再守住一次，两道门。
  */
 
+import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { SyncRequest } from "@kuaiban/core";
 import { passwordProblem } from "./auth.ts";
 import { Store, StoreError, type ServerUser } from "./store.ts";
@@ -25,6 +28,30 @@ const MAX_BODY_BYTES = 1024 * 1024;
 /** 登录失败限流：同一登录名 15 分钟内最多 10 次失败 */
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 10;
+
+/**
+ * 管理后台页面。
+ *
+ * 刻意做成**一个静态 HTML 文件**：零构建步骤、零前端依赖，
+ * 服务端启动时读进内存直接发。管理员在浏览器里打开就能用，不用装任何东西。
+ * 这和整个服务端"不要第三方运行时依赖"的思路是一致的。
+ */
+const ADMIN_HTML = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "..", "public", "admin.html"),
+  "utf8",
+);
+
+/** 管理后台的地址。放根路径，管理员好记 */
+const ADMIN_PATHS = new Set(["/", "/admin", "/admin/", "/index.html"]);
+
+function sendHtml(res: ServerResponse, html: string): void {
+  res.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "content-length": Buffer.byteLength(html),
+    "x-content-type-options": "nosniff",
+  });
+  res.end(html);
+}
 
 interface Ctx {
   req: IncomingMessage;
@@ -311,6 +338,12 @@ export function createApp({ store, disableRateLimit = false }: AppOptions): Serv
         }
 
         const url = new URL(req.url ?? "/", "http://localhost");
+
+        // 管理后台页面（静态，不需要登录态；里面的数据接口才需要）
+        if (req.method === "GET" && ADMIN_PATHS.has(url.pathname)) {
+          sendHtml(res, ADMIN_HTML);
+          return;
+        }
         const body = req.method === "POST" ? await readBody(req) : {};
 
         // Bearer 令牌
