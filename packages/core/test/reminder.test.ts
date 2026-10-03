@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_QUIET_HOURS,
+  completeOccurrence,
+  dueReminders,
+  isMissedReminder,
+  reminderKey,
+  softDelete,
   ESCALATE_AFTER_MS,
   allDayTodosOn,
   batchReminders,
-  collectDueReminders,
   fireAtFor,
   isQuietTime,
   quietHoursEndAt,
@@ -52,83 +56,6 @@ describe("提醒时刻", () => {
   });
 });
 
-describe("时间窗收集", () => {
-  const meeting = todo({ title: "开会", date: MON, time: "09:30" });
-
-  it("落在窗口内 → 响", () => {
-    const due = collectDueReminders([meeting], at("2026-06-15T09:30:05"), at("2026-06-15T09:29:50"));
-    expect(due.map((d) => d.todo.title)).toEqual(["开会"]);
-  });
-
-  it("窗口之前 → 不响", () => {
-    const due = collectDueReminders([meeting], at("2026-06-15T09:00:00"), at("2026-06-15T08:59:00"));
-    expect(due).toHaveLength(0);
-  });
-
-  it("窗口之后 → 不响（避免重复补响）", () => {
-    const due = collectDueReminders([meeting], at("2026-06-15T10:00:00"), at("2026-06-15T09:40:00"));
-    expect(due).toHaveLength(0);
-  });
-
-  it("用时间窗而不是「等于此刻」，所以睡眠/卡顿后不会漏", () => {
-    // 电脑睡了 20 分钟，醒来后一次调用补上
-    const due = collectDueReminders([meeting], at("2026-06-15T09:50:00"), at("2026-06-15T09:29:00"));
-    expect(due.map((d) => d.todo.title)).toEqual(["开会"]);
-  });
-
-  it("已完成的不响", () => {
-    const done = {
-      ...meeting,
-      status: "done" as const,
-      completedAt: at("2026-06-15T09:00:00").toISOString(),
-    };
-    expect(collectDueReminders([done], at("2026-06-15T09:30:05"), at("2026-06-15T09:29:50"))).toHaveLength(0);
-  });
-
-  it("软删除的不响", () => {
-    const gone = { ...meeting, deletedAt: at("2026-06-15T08:00:00").toISOString() };
-    expect(collectDueReminders([gone], at("2026-06-15T09:30:05"), at("2026-06-15T09:29:50"))).toHaveLength(0);
-  });
-
-  it("重复任务在发生的当天响", () => {
-    const daily = todo({ title: "喝水提醒", date: "2026-06-01", time: "09:30", repeat: { kind: "daily" } });
-    const due = collectDueReminders([daily], at("2026-06-15T09:30:05"), at("2026-06-15T09:29:50"));
-    expect(due.map((d) => d.todo.title)).toEqual(["喝水提醒"]);
-  });
-
-  it("重复任务今天已完成 → 不再响", () => {
-    const daily = todo({ title: "喝水", date: "2026-06-01", time: "09:30", repeat: { kind: "daily" } });
-    const doneToday = { ...daily, lastDoneDate: MON };
-    expect(collectDueReminders([doneToday], at("2026-06-15T09:30:05"), at("2026-06-15T09:29:50"))).toHaveLength(0);
-  });
-
-  it("跨业务日：昨天 23:00 的提醒在凌晨补响", () => {
-    // 2026-06-15 00:10 的业务日仍是 06-14
-    const night = todo({ title: "夜班交接", date: "2026-06-14", time: "23:00" });
-    const due = collectDueReminders(
-      [night],
-      at("2026-06-15T00:10:00"),
-      at("2026-06-14T22:59:00"),
-      { quietHours: { ...DEFAULT_QUIET_HOURS, enabled: false } },
-    );
-    expect(due.map((d) => d.todo.title)).toEqual(["夜班交接"]);
-  });
-
-  it("更早的逾期事项不会反复补响（它们进「昨日未完成」区）", () => {
-    const old = todo({ title: "三天前的事", date: "2026-06-12", time: "09:30" });
-    expect(collectDueReminders([old], at("2026-06-15T09:30:05"), at("2026-06-15T09:29:50"))).toHaveLength(0);
-  });
-
-  it("多条按时间先后返回", () => {
-    const todos = [
-      todo({ title: "晚", date: MON, time: "10:00" }),
-      todo({ title: "早", date: MON, time: "09:30" }),
-    ];
-    const due = collectDueReminders(todos, at("2026-06-15T10:00:05"), at("2026-06-15T09:29:00"));
-    expect(due.map((d) => d.todo.title)).toEqual(["早", "晚"]);
-  });
-});
-
 describe("免打扰", () => {
   it("22:00–07:00 跨午夜", () => {
     expect(isQuietTime(at("2026-06-15T23:00:00"), DEFAULT_QUIET_HOURS)).toBe(true);
@@ -153,15 +80,11 @@ describe("免打扰", () => {
     expect(isQuietTime(at("2026-06-15T12:00:00"), { enabled: true, start: "12:00", end: "12:00" })).toBe(false);
   });
 
-  it("夜间到点的提醒被过滤掉（只闪不响，早上再说）", () => {
+  it("免打扰期间提醒**仍然算到点**（只闪图标，外壳据此决定不响不弹）", () => {
     const night = todo({ title: "夜宵", date: MON, time: "23:00" });
-    const due = collectDueReminders(
-      [night],
-      at("2026-06-15T23:00:10"),
-      at("2026-06-15T22:59:50"),
-      { quietHours: DEFAULT_QUIET_HOURS },
-    );
-    expect(due).toHaveLength(0);
+    const at2330 = at("2026-06-15T23:00:10");
+    expect(dueReminders([night], at2330)).toHaveLength(1);
+    expect(isQuietTime(at2330, DEFAULT_QUIET_HOURS)).toBe(true);
   });
 
   it("quietHoursEndAt 指向下一个免打扰结束时刻", () => {
@@ -178,11 +101,15 @@ describe("免打扰", () => {
 });
 
 describe("提醒风暴合并 —— 生死线", () => {
-  const mk = (title: string): DueReminder => ({
-    todo: todo({ title, date: MON, time: "09:30" }),
-    occurrenceDate: MON,
-    fireAt: at("2026-06-15T09:30:00"),
-  });
+  const mk = (title: string): DueReminder => {
+    const t = todo({ title, date: MON, time: "09:30" });
+    return {
+      todo: t,
+      occurrenceDate: MON,
+      fireAt: at("2026-06-15T09:30:00"),
+      key: reminderKey(t.id, MON),
+    };
+  };
 
   it("0 条", () => {
     const b = batchReminders([]);
@@ -225,5 +152,109 @@ describe("全天事项汇总", () => {
     const t = todo({ title: "买咖啡豆", date: MON });
     const done = { ...t, status: "done" as const, completedAt: at("2026-06-15T09:00:00").toISOString() };
     expect(allDayTodosOn([done], MON)).toHaveLength(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// 提醒队列用的「所有未处理提醒」—— 关键性质：
+// 不依赖调用间隔，所以睡眠 / 卡顿 / 重启后重新算一遍都不会漏；只看当前业务日。
+// ─────────────────────────────────────────────────────────────
+
+describe("dueReminders：所有已到点、还没处理的", () => {
+  it("返回全部，而不只是某个时间窗内的", () => {
+    const todos = [
+      todo({ title: "九点半", date: MON, time: "09:30" }),
+      todo({ title: "十点", date: MON, time: "10:00" }),
+    ];
+    // 11:00 一次调用就该拿到两条（时间窗方案若 since 设成 10:30 就只会拿到一条）
+    const due = dueReminders(todos, at("2026-06-15T11:00:00"));
+    expect(due.map((d) => d.todo.title)).toEqual(["九点半", "十点"]);
+  });
+
+  it("幂等：同一时刻反复调用结果一致（队列靠它做重算）", () => {
+    const todos = [todo({ title: "开会", date: MON, time: "09:30" })];
+    const a = dueReminders(todos, at("2026-06-15T09:40:00"));
+    const b = dueReminders(todos, at("2026-06-15T09:40:00"));
+    expect(a.map((d) => d.key)).toEqual(b.map((d) => d.key));
+  });
+
+  it("还没到点的不返回", () => {
+    const todos = [todo({ title: "下午", date: MON, time: "17:00" })];
+    expect(dueReminders(todos, at("2026-06-15T09:00:00"))).toHaveLength(0);
+  });
+
+  it("已完成的不返回", () => {
+    const t = completeOccurrence(todo({ title: "开会", date: MON, time: "09:30" }), MON, at("2026-06-15T09:00:00"));
+    expect(dueReminders([t], at("2026-06-15T09:40:00"))).toHaveLength(0);
+  });
+
+  it("软删除的不返回", () => {
+    const t = softDelete(todo({ title: "开会", date: MON, time: "09:30" }), at("2026-06-15T08:00:00"));
+    expect(dueReminders([t], at("2026-06-15T09:40:00"))).toHaveLength(0);
+  });
+
+  it("全天事项（没时间）不产生提醒", () => {
+    const todos = [todo({ title: "买咖啡豆", date: MON })];
+    expect(dueReminders(todos, at("2026-06-15T23:00:00"))).toHaveLength(0);
+  });
+
+  it("昨天到点没处理的，今天不再响 —— 它已经在「昨日未完成」区里了", () => {
+    const todos = [
+      todo({ title: "前天", date: "2026-06-13", time: "09:30" }),
+      todo({ title: "昨天", date: "2026-06-14", time: "09:30" }),
+    ];
+    // 用响铃重复打扰昨天的事，正是这个软件要消灭的噪音
+    expect(dueReminders(todos, at("2026-06-15T10:00:00"))).toEqual([]);
+  });
+
+  it("每日任务一天只响一次（曾经会连昨天的份一起响）", () => {
+    const daily = todo({ title: "吃药", date: "2026-06-01", time: "09:30", repeat: { kind: "daily" } });
+    expect(dueReminders([daily], at("2026-06-15T09:40:00"))).toHaveLength(1);
+  });
+
+  it("跨业务日：凌晨 3 点仍算前一天，昨天的提醒照样响", () => {
+    const todos = [todo({ title: "夜班", date: "2026-06-14", time: "23:00" })];
+    // 2026-06-15 00:30 的业务日 = 06-14
+    expect(dueReminders(todos, at("2026-06-15T00:30:00"))).toHaveLength(1);
+  });
+
+  it("到点越久的排越前面（最该处理的先看到）", () => {
+    const todos = [
+      todo({ title: "晚", date: MON, time: "10:00" }),
+      todo({ title: "早", date: MON, time: "09:00" }),
+    ];
+    expect(dueReminders(todos, at("2026-06-15T11:00:00")).map((d) => d.todo.title)).toEqual(["早", "晚"]);
+  });
+
+  it("重复任务在发生的当天到点", () => {
+    const daily = todo({ title: "吃药", date: "2026-06-01", time: "09:30", repeat: { kind: "daily" } });
+    expect(dueReminders([daily], at("2026-06-15T09:40:00"))).toHaveLength(1);
+  });
+
+  it("重复任务今天已完成 → 不再响", () => {
+    const daily = todo({ title: "吃药", date: "2026-06-01", time: "09:30", repeat: { kind: "daily" } });
+    const done = completeOccurrence(daily, MON, at("2026-06-15T09:00:00"));
+    expect(dueReminders([done], at("2026-06-15T09:40:00"))).toHaveLength(0);
+  });
+
+  it("key 形如 待办id@业务日，且推后/静音按它记账", () => {
+    const t = todo({ title: "开会", date: MON, time: "09:30" });
+    const due = dueReminders([t], at("2026-06-15T09:40:00"));
+    expect(due[0]!.key).toBe(reminderKey(t.id, MON));
+    expect(due[0]!.key).toBe(`${t.id}@2026-06-15`);
+  });
+});
+
+describe("错过判定", () => {
+  it("刚过 10 分钟不算错过", () => {
+    const t = todo({ title: "开会", date: MON, time: "09:30" });
+    const item = dueReminders([t], at("2026-06-15T09:39:00"))[0]!;
+    expect(isMissedReminder(item, at("2026-06-15T09:39:00"))).toBe(false);
+  });
+
+  it("过了一个多小时算错过（软件刚打开时会标注出来）", () => {
+    const t = todo({ title: "开会", date: MON, time: "09:30" });
+    const item = dueReminders([t], at("2026-06-15T11:00:00"))[0]!;
+    expect(isMissedReminder(item, at("2026-06-15T11:00:00"))).toBe(true);
   });
 });

@@ -77,6 +77,9 @@ pub struct WidgetState {
     /// Windows：临时可激活之前的前台窗口句柄，用于交还焦点（0 = 无）
     #[cfg_attr(not(windows), allow(dead_code))]
     prev_foreground: AtomicIsize,
+    /// 有「未处理的到点提醒」时置位：这段时间内**不要**自动收起面板，
+    /// 否则提醒卡片刚弹出来就会被兜底收起，用户根本没看见。
+    hold_open: AtomicBool,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -192,6 +195,16 @@ fn get_status(app: AppHandle) -> WidgetStatus {
     app.state::<WidgetState>().status()
 }
 
+/// 有未处理的到点提醒时由前端置位，避免面板被"鼠标移开 3 秒"的兜底收起。
+/// 提醒全部处理完后前端会复位，面板随即恢复正常行为。
+///
+/// 参数刻意叫 `hold`（单词）而不是 `hold_open`：Tauri 会把 JS 侧的 camelCase
+/// 转成 Rust 的 snake_case，单词名可以完全绕开这个转换，少一个看不见的失败点。
+#[tauri::command]
+fn set_hold_open(app: AppHandle, hold: bool) {
+    app.state::<WidgetState>().hold_open.store(hold, Ordering::Relaxed);
+}
+
 /// Windows 专用：临时允许 / 禁止本窗口被激活。
 ///
 /// 背景：挂件平时带 WS_EX_NOACTIVATE（点击不抢焦点），代价是这个窗口永远拿不到键盘焦点，
@@ -272,7 +285,10 @@ fn spawn_hover_watcher(app: AppHandle) {
             // 否则鼠标一离开窗口，就会把正在输入的面板收掉、草稿白打。
             // ⚠️ 非 Windows 平台该标志恒为 false，这条保护不生效
             //    （macOS 的同类问题必须在前端 App.vue 的 scheduleCollapse 里修）。
-            if state.activatable.load(Ordering::Relaxed) {
+            //
+            // 有未处理的到点提醒时同样不收起：提醒卡片正是要让人看见的，
+            // 弹出来 3 秒就被兜底收走等于没提醒。
+            if state.activatable.load(Ordering::Relaxed) || state.hold_open.load(Ordering::Relaxed) {
                 outside_streak = 0;
                 continue;
             }
@@ -622,7 +638,8 @@ pub fn run() {
             set_expanded,
             set_pinned,
             get_status,
-            set_activatable
+            set_activatable,
+            set_hold_open
         ])
         .setup(|app| {
             let handle = app.handle().clone();

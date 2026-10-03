@@ -327,9 +327,11 @@ test("空清单显示引导文案，而不是一片空白", async ({ page }) => 
 });
 
 test("钉子按钮可切换（浏览器里只是本地状态）", async ({ page }) => {
-  await expect(page.locator(".pin")).not.toHaveClass(/on/);
-  await page.locator(".pin").click();
-  await expect(page.locator(".pin")).toHaveClass(/on/);
+  // 头部现在有两个按钮（⚙ 设置 / 📌 钉住），按 title 精确定位
+  const pin = page.locator('.pin[title*="钉住"]');
+  await expect(pin).not.toHaveClass(/on/);
+  await pin.click();
+  await expect(pin).toHaveClass(/on/);
 });
 
 
@@ -410,4 +412,116 @@ test("随笔里「排今天」能把没排期的事排到今天", async ({ page 
   await page.locator(".tab", { hasText: "今天" }).click();
   await expect(page.locator(".row", { hasText: "一个灵感" })).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+// ─────────────────────────────────────────────────────────────
+// 到点提醒
+//
+// 浏览器里没有 Tauri，所以"响声音 / 自动展开面板"这两个平台效果不会真的发生，
+// 这里验证的是**判断与呈现**：该不该出现、卡片长什么样、处理动作有没有生效。
+// 真实的声音与展开在 macOS 上用截图人工验收。
+// ─────────────────────────────────────────────────────────────
+
+/** 加一条"时间已经过去"的待办，制造到点提醒 */
+async function addPastDue(page: Page, title: string, time = "00:01") {
+  await page.fill(".add", `${time} ${title}`);
+  await page.press(".add", "Enter");
+}
+
+test("到点的待办会出现提醒卡片，窄条变红闪动", async ({ page }) => {
+  const errors = collectErrors(page);
+  await addPastDue(page, "已经到点的事");
+
+  const card = page.locator(".reminder-card");
+  await expect(card).toBeVisible();
+  await expect(card).toContainText("已经到点的事");
+  await expect(card).toContainText("00:01");
+  await expect(page.locator(".strip")).toHaveClass(/alerting/);
+  expect(errors).toEqual([]);
+});
+
+test("多条同时到点合并成一张卡片 —— 绝不弹 N 个窗口", async ({ page }) => {
+  await addPastDue(page, "第一条", "00:01");
+  await addPastDue(page, "第二条", "00:02");
+  await addPastDue(page, "第三条", "00:03");
+
+  await expect(page.locator(".reminder-card")).toHaveCount(1);
+  const card = page.locator(".reminder-card");
+  await expect(card).toContainText("到点了");
+  await expect(card.locator(".rc-item")).toHaveCount(3);
+  // 多件事时给"全部推后"，避免逐条点
+  await expect(card.locator(".rc-all")).toBeVisible();
+});
+
+test("提醒卡片里可以直接标记完成", async ({ page }) => {
+  await addPastDue(page, "要做的事");
+  await expect(page.locator(".reminder-card")).toBeVisible();
+
+  await page.locator(".rc-check").first().click();
+  await expect(page.locator(".reminder-card")).toHaveCount(0);
+  // 窄条也恢复常态
+  await expect(page.locator(".strip")).not.toHaveClass(/alerting/);
+});
+
+test("提醒可以推后：立刻从卡片消失，且待办本身没被改动", async ({ page }) => {
+  await addPastDue(page, "等等再做");
+  await expect(page.locator(".reminder-card")).toBeVisible();
+
+  await page.locator(".rc-act", { hasText: "推后" }).first().click();
+  await expect(page.locator(".reminder-card")).toHaveCount(0);
+
+  // 待办还在今天清单里（推后只是推迟提醒，不是完成）
+  await expect(page.locator(".row", { hasText: "等等再做" })).toBeVisible();
+});
+
+test("今天不再提醒：卡片消失，待办仍在", async ({ page }) => {
+  await addPastDue(page, "今天别烦我");
+  await expect(page.locator(".reminder-card")).toBeVisible();
+
+  await page.locator(".rc-act", { hasText: "静音" }).first().click();
+  await expect(page.locator(".reminder-card")).toHaveCount(0);
+  await expect(page.locator(".row", { hasText: "今天别烦我" })).toBeVisible();
+});
+
+test("「全部推后」一次清空整张卡片", async ({ page }) => {
+  await addPastDue(page, "甲", "00:01");
+  await addPastDue(page, "乙", "00:02");
+  await expect(page.locator(".rc-item")).toHaveCount(2);
+
+  await page.locator(".rc-all").click();
+  await expect(page.locator(".reminder-card")).toHaveCount(0);
+});
+
+test("没到点的待办不会提前提醒", async ({ page }) => {
+  await page.fill(".add", "23:59 还没到点的事");
+  await page.press(".add", "Enter");
+
+  await expect(page.locator(".row", { hasText: "还没到点的事" })).toBeVisible();
+  await expect(page.locator(".reminder-card")).toHaveCount(0);
+});
+
+test("没设时间的全天事项不产生提醒（只在早上汇总）", async ({ page }) => {
+  await page.fill(".add", "买咖啡豆");
+  await page.press(".add", "Enter");
+
+  await expect(page.locator(".row", { hasText: "买咖啡豆" })).toBeVisible();
+  await expect(page.locator(".reminder-card")).toHaveCount(0);
+});
+
+test("设置里可以关掉提醒声音", async ({ page }) => {
+  await page.locator(".pin", { hasText: "⚙" }).click();
+  const sound = page.locator(".set-toggle").first();
+  await expect(sound).toHaveClass(/on/); // 默认开
+
+  await sound.click();
+  await expect(sound).not.toHaveClass(/on/);
+});
+
+test("设置里可以开关免打扰", async ({ page }) => {
+  await page.locator(".pin", { hasText: "⚙" }).click();
+  const dnd = page.locator(".set-toggle").nth(1);
+  await expect(dnd).toHaveClass(/on/); // 默认 22:00–07:00 开
+
+  await dnd.click();
+  await expect(dnd).not.toHaveClass(/on/);
 });

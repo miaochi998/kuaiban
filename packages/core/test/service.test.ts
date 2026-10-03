@@ -3,7 +3,7 @@ import {
   MemoryTodoRepository,
   TodoService,
   buildDailyView,
-  collectDueReminders,
+  dueReminders,
   type Todo,
 } from "../src";
 import { MON } from "./helpers";
@@ -175,11 +175,7 @@ describe("与提醒引擎串联", () => {
     const { service } = make();
     await service.add({ title: "开会", date: MON, time: "09:30" });
 
-    const due = collectDueReminders(
-      await service.list(),
-      new Date("2026-06-15T09:30:05"),
-      new Date("2026-06-15T09:29:50"),
-    );
+    const due = dueReminders(await service.list(), new Date("2026-06-15T09:30:05"));
     expect(due.map((d) => d.todo.title)).toEqual(["开会"]);
   });
 
@@ -188,11 +184,7 @@ describe("与提醒引擎串联", () => {
     const t = await service.add({ title: "开会", date: MON, time: "09:30" });
     await service.setDone(t, MON, true);
 
-    const due = collectDueReminders(
-      await service.list(),
-      new Date("2026-06-15T09:30:05"),
-      new Date("2026-06-15T09:29:50"),
-    );
+    const due = dueReminders(await service.list(), new Date("2026-06-15T09:30:05"));
     expect(due).toHaveLength(0);
   });
 });

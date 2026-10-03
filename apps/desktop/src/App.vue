@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { fromDateKey, monthGrid, todosOnDate, type DateKey, type Todo } from "@kuaiban/core";
+import ReminderCard from "./components/ReminderCard.vue";
 import TodoRow from "./components/TodoRow.vue";
 import {
   browserHintStorage,
@@ -11,6 +12,7 @@ import {
   saveDismissedHints,
 } from "./lib/hints";
 import { parseDraft } from "./lib/parse-draft";
+import { SNOOZE_SHORT_MS, startReminders, useReminderStore } from "./store/reminders";
 import { useTodoStore, type PanelTab } from "./store/todos";
 
 // ─────────────────────────────────────────────────────────────
@@ -142,6 +144,9 @@ onMounted(async () => {
     }
   });
   window.addEventListener("keydown", onKeydown);
+
+  // 提醒轮询。放在挂载之后启动：它依赖待办列表已经能读到。
+  startReminders();
 });
 
 onUnmounted(() => {
@@ -172,6 +177,18 @@ const {
 
 const showDone = ref(false);
 const draft = ref("");
+
+// ── 到点提醒（引擎在 store/reminders.ts）──
+const reminders = useReminderStore();
+const { active: activeReminders, activeCount, missedCount, settings: reminderSettings, inQuietHours } =
+  reminders;
+
+const showSettings = ref(false);
+
+/** 窄条角标：有未处理的到点时显示提醒条数（更要紧），否则显示今日未完成数 */
+const badgeCount = computed(() =>
+  activeCount.value > 0 ? activeCount.value : remainingCount.value,
+);
 
 const TABS: { key: PanelTab; label: string }[] = [
   { key: "today", label: "今天" },
@@ -346,8 +363,10 @@ function shiftMonth(delta: number) {
 <template>
   <div class="widget" :class="{ expanded, pinned }">
     <!-- ── 收起时露在屏幕最右侧的窄条 ────────────────────── -->
-    <div class="strip" aria-hidden="true">
-      <span v-if="remainingCount > 0" class="strip-badge">{{ remainingCount }}</span>
+    <div class="strip" :class="{ alerting: activeCount > 0 }" aria-hidden="true">
+      <span v-if="badgeCount > 0" class="strip-badge" :class="{ urgent: activeCount > 0 }">
+        {{ badgeCount }}
+      </span>
       <span class="strip-grip"></span>
     </div>
 
@@ -358,12 +377,34 @@ function shiftMonth(delta: number) {
         <div class="head-count">还有 <b>{{ remainingCount }}</b> 件</div>
         <button
           class="pin"
+          type="button"
+          :title="showSettings ? '关闭设置' : '设置'"
+          :class="{ on: showSettings }"
+          @click="showSettings = !showSettings"
+        >⚙</button>
+        <button
+          class="pin"
           :class="{ on: pinned }"
           type="button"
           :title="pinned ? '取消钉住' : '钉住（鼠标移开也不收起）'"
           @click="togglePin"
         >📌</button>
       </header>
+
+      <!--
+        提醒卡片放在页签之上：无论用户当前在看哪个页签，到点的事都立刻可见。
+        没有提醒时它整块不渲染，不占地方。
+      -->
+      <ReminderCard
+        v-if="activeReminders.length > 0"
+        :items="activeReminders"
+        :missed-count="missedCount"
+        @complete="reminders.completeReminder"
+        @snooze="(item) => reminders.snoozeReminder(item, SNOOZE_SHORT_MS)"
+        @mute="reminders.muteReminder"
+        @snooze-all="() => reminders.snoozeAll(SNOOZE_SHORT_MS)"
+        @mute-all="reminders.muteAll"
+      />
 
       <nav class="tabs">
         <button
@@ -386,6 +427,41 @@ function shiftMonth(delta: number) {
         </p>
 
         <p v-else-if="!ready" class="loading">{{ loadPhase }}</p>
+
+        <!-- ── 设置 ── -->
+        <div v-else-if="showSettings" class="settings">
+          <div class="set-row">
+            <span class="set-label">提醒声音</span>
+            <button
+              class="set-link"
+              type="button"
+              @click="reminders.previewChime()"
+            >试听</button>
+            <button
+              class="set-toggle"
+              :class="{ on: reminderSettings.soundEnabled }"
+              type="button"
+              @click="reminders.setSoundEnabled(!reminderSettings.soundEnabled)"
+            >{{ reminderSettings.soundEnabled ? "开" : "关" }}</button>
+          </div>
+
+          <div class="set-row">
+            <span class="set-label">免打扰 22:00–07:00</span>
+            <button
+              class="set-toggle"
+              :class="{ on: reminderSettings.quietHours.enabled }"
+              type="button"
+              @click="reminders.setQuietEnabled(!reminderSettings.quietHours.enabled)"
+            >{{ reminderSettings.quietHours.enabled ? "开" : "关" }}</button>
+          </div>
+
+          <p class="set-note">
+            免打扰期间只让图标闪动，不响声音、不自动弹面板 —— 你主动点开仍然能看到。
+          </p>
+          <p class="set-note dim">
+            当前：{{ inQuietHours ? "免打扰中" : "正常提醒" }}
+          </p>
+        </div>
 
         <!-- ── 日历页签 ── -->
         <template v-else-if="activeTab === 'calendar'">
@@ -620,6 +696,28 @@ body {
 .widget.expanded .strip {
   opacity: 0;
   transform: translateY(-50%) translateX(24px);
+}
+
+/* 有未处理的到点提醒：窄条变红并持续脉动。
+   这是 L1「静默提示」—— 不抢焦点、不弹窗，但足够显眼。
+   用户正在打字或开会时，弹东西盖住屏幕是最讨人厌的做法。 */
+.strip.alerting {
+  background: linear-gradient(180deg, #fb7185 0%, #dc2626 100%);
+  animation: strip-pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes strip-pulse {
+  0%,
+  100% {
+    box-shadow: -3px 0 12px rgba(220, 38, 38, 0.4);
+  }
+  50% {
+    box-shadow: -3px 0 26px rgba(220, 38, 38, 0.95);
+  }
+}
+
+.strip-badge.urgent {
+  color: #dc2626;
 }
 
 .strip-badge {
@@ -997,6 +1095,74 @@ body {
 .cal-dot[data-n="3"] {
   width: 14px;
   border-radius: 2px;
+}
+
+/* 设置面板 */
+.settings {
+  padding: 6px 8px 10px;
+}
+
+.set-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 2px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.05);
+}
+
+.set-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: #334155;
+}
+
+.set-toggle {
+  flex: none;
+  width: 34px;
+  padding: 3px 0;
+  border: none;
+  border-radius: 7px;
+  background: rgba(15, 23, 42, 0.08);
+  font-family: inherit;
+  font-size: 11px;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.set-toggle.on {
+  background: rgba(59, 110, 246, 0.14);
+  color: #3b6ef6;
+  font-weight: 600;
+}
+
+.set-link {
+  flex: none;
+  padding: 3px 8px;
+  border: none;
+  border-radius: 7px;
+  background: rgba(15, 23, 42, 0.05);
+  font-family: inherit;
+  font-size: 11px;
+  color: #64748b;
+  cursor: pointer;
+}
+
+.set-link:hover {
+  background: rgba(59, 110, 246, 0.12);
+  color: #3b6ef6;
+}
+
+.set-note {
+  margin: 8px 2px 0;
+  font-size: 10px;
+  line-height: 1.6;
+  color: #94a3b8;
+}
+
+.set-note.dim {
+  color: #c2cddb;
 }
 
 /* 底部输入 */

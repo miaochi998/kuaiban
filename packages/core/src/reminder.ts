@@ -14,7 +14,7 @@ import {
   type TimeOfDay,
   type Todo,
 } from "@kuaiban/shared";
-import { addDays, atTimeOnDate, businessDateKey, parseTimeOfDay } from "./date";
+import { atTimeOnDate, businessDateKey, parseTimeOfDay } from "./date";
 import { occursOn } from "./repeat";
 import { isAlive, isOccurrencePending } from "./todo";
 
@@ -30,6 +30,13 @@ export interface DueReminder {
   occurrenceDate: DateKey;
   /** 理论上应该在什么时刻响 */
   fireAt: Date;
+  /** 唯一标识：`待办id@业务日`。推后 / 今天不再提醒 / 已升级气泡 都按它记账 */
+  key: string;
+}
+
+/** 同一条待办同一天的唯一标识 */
+export function reminderKey(todoId: string, dateKey: DateKey): string {
+  return `${todoId}@${dateKey}`;
 }
 
 /**
@@ -45,60 +52,72 @@ export function fireAtFor(todo: Todo, dateKey: DateKey): Date | null {
   return new Date(at.getTime() - before * 60_000);
 }
 
-export interface CollectOptions {
+export interface DueOptions {
   /** 业务日分界小时，默认 04:00 */
   boundaryHour?: number;
-  /** 免打扰时段；命中的提醒会被推迟到免打扰结束后（返回时被过滤掉） */
-  quietHours?: QuietHours;
 }
 
 /**
- * 收集在 `(since, now]` 这段时间里"本该响"的提醒。
+ * 当前**所有**「已经到点、还没处理」的提醒。
  *
- * 调用方式：外壳每 15 秒调一次，`since` 传上次调用的时刻。
- * 用**时间窗**而不是"等于此刻"，是为了让睡眠 / 卡顿 / 短暂挂起后不会漏提醒。
- * 真正的"漏了很久"由外壳汇总成一条"你错过了 N 个提醒"（业务逻辑文档 §6.2）。
+ * ## 为什么是"所有"，而不是"某个时间窗内新到点的"
  *
- * 只回看昨天和今天两天：更早的一次性待办已经进了「昨日未完成」区，
- * 不该再重复响（那正是这个软件要避免的噪音）。
+ * 时间窗方案（"上次检查到现在之间新到点的"）依赖调用间隔：软件睡了、卡了、
+ * 被关掉再打开，窗口就错开了，**会漏**。而这个函数每次都是重新算一遍
+ * "到现在为止还有哪些没处理"，与调用间隔无关。
+ *
+ * 提醒队列因此可以很简单：每次重算候选，减去"已处理的"（完成 / 推后 / 今天不再提醒），
+ * 结果永远正确，不需要维护脆弱的增量状态。
+ *
+ * ## 为什么只看当前业务日
+ *
+ * 一开始回看了"昨天 + 今天"，结果**每日任务昨天那次也跟着响**（一天响两遍），
+ * 而且昨天没做完的一次性事项早就进了「昨日未完成」区用视觉呈现了，
+ * 再用响铃重复打扰纯属噪音 —— 那正是这个软件要消灭的东西。
+ *
+ * 跨午夜不是问题：业务日的分界是凌晨 04:00，所以 00:00–04:00 的提醒
+ * 本来就属于"当前业务日"（`businessDateKey` 会把凌晨算作前一天）。
+ *
+ * 唯一会漏的场景：软件在 23:00–04:00 之间完全没开 —— 那条提醒不会响，
+ * 但事项仍会出现在「昨日未完成」里，不会丢。
  */
-export function collectDueReminders(
+export function dueReminders(
   todos: Todo[],
   now: Date,
-  since: Date,
-  opts: CollectOptions = {},
+  opts: DueOptions = {},
 ): DueReminder[] {
   const boundaryHour = opts.boundaryHour ?? DEFAULT_DAY_BOUNDARY_HOUR;
   const today = businessDateKey(now, boundaryHour);
-  const days: DateKey[] = [addDays(today, -1), today];
-
   const nowMs = now.getTime();
-  const sinceMs = since.getTime();
-  const out: DueReminder[] = [];
 
+  const out: DueReminder[] = [];
   for (const todo of todos) {
     if (!isAlive(todo)) continue;
+    if (!occursOn(todo, today)) continue;
+    if (!isOccurrencePending(todo, today)) continue;
 
-    for (const day of days) {
-      if (!occursOn(todo, day)) continue;
-      if (!isOccurrencePending(todo, day)) continue;
+    const fireAt = fireAtFor(todo, today);
+    if (!fireAt) continue;
+    if (fireAt.getTime() > nowMs) continue; // 还没到点
 
-      const fireAt = fireAtFor(todo, day);
-      if (!fireAt) continue;
-
-      const ms = fireAt.getTime();
-      if (ms > sinceMs && ms <= nowMs) {
-        out.push({ todo, occurrenceDate: day, fireAt });
-      }
-    }
+    out.push({ todo, occurrenceDate: today, fireAt, key: reminderKey(todo.id, today) });
   }
 
+  // 到点越久的排越前面 —— 最该被处理的先被看到
   out.sort((a, b) => a.fireAt.getTime() - b.fireAt.getTime());
-
-  if (opts.quietHours?.enabled) {
-    return out.filter((r) => !isQuietTime(r.fireAt, opts.quietHours as QuietHours));
-  }
   return out;
+}
+
+/**
+ * 这条提醒是不是"错过太久了"（软件没开着 / 电脑睡了很久）。
+ *
+ * 用途：重新打开软件时，把这种老提醒标注出来，让人一眼看出
+ * "这不是刚刚到点的，是我错过的那批"（业务逻辑文档 §6.2）。
+ */
+export const MISSED_AFTER_MS = 10 * 60_000;
+
+export function isMissedReminder(item: DueReminder, now: Date): boolean {
+  return now.getTime() - item.fireAt.getTime() > MISSED_AFTER_MS;
 }
 
 // ─────────────────────────────────────────────────────────────

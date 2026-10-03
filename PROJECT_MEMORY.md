@@ -181,6 +181,22 @@ UI 补充（commit 377a39c）：输入框加「添加」按钮，回车与点按
 【UI 设计教训】不要用"藏起入口"来表达"这里不能做"。用户看到输入框消失会理解为"功能缺失"，而不是"需要先选个日期"。应该保留入口位置并给出下一步提示。
 
 e2e 新增 6 个日历用例（原"日历不该能加"的用例已改写），总计 26 个全过。
+- [2026-10-03 10:18] [工作记录] 用法引导（教一次就闭嘴）+ 随笔一键排今天（9bddd8b） — 用户要求"把隐藏用法做成更明显的引导"——已完成，commit 9bddd8b。
+
+【设计：教一次就闭嘴】apps/desktop/src/lib/hints.ts
+- 教学提示（COACH_HINTS）每条只出现一次，点 ✕ 后记入 localStorage（key `kuaiban.hints.dismissed.v1`），永久不再出现
+- 全部学完后只留一行随页签变化的"常驻备忘"（fallbackHint）
+- 优先级顺序：time-shortcut（直接写时间，最值钱）→ overdue-carry → inbox-schedule → pin-panel
+- **关键规则：`hasTarget === false` 时（日历未选日期）状态指引优先于教学提示**，否则"点日历上的某一天"会被"📌 可以钉住"挤掉。有专门测试守这条。
+- 纯函数 `pickHint(ctx)` 可单测；storage 用接口注入（HintStorage），Node 环境传 null 也不崩。
+
+【顺带补齐】随笔原来"只能看不能动"（没有排期入口，暂存区变垃圾场）。TodoRow 的 `canCarry` 现在也覆盖 `date === null` 的情况，标签变「排今天」。完整的选择任意日期排期仍未做。
+
+【设计教训（可复用）】不要用"藏起入口"表达"这里不能做"；用户会理解为功能缺失。应保留入口位置并给出下一步指引。另外：教学提示不能无条件优先，涉及"当前状态下该怎么做"的指引优先级必须高于"技巧科普"。
+
+【测试】桌面 100（新增 14 个 hints 测试，含"文案长度 ≤34 字"的守护，防止撑破 340px 面板）、e2e 32（新增 6 个）、大脑 168。
+
+【真实应用验证方式（当前可用的手段）】屏幕录制权限已开 → `screencapture` + Pillow 裁剪；辅助功能权限已开 → `/tmp/kbmouse`（CGEventPost，支持 move/click/pos/scroll）。中文输入用 `osascript -e 'set the clipboard to "..."'` + Cmd+V（直接 keystroke 中文会乱码）。`KUAIBAN_DEBUG_EXPANDED=1` 可让挂件启动即展开，便于截图验证。
 
 ## 经验教训 Lessons Learned
 
