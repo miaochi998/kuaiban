@@ -2,7 +2,8 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { fromDateKey, monthGrid, todosOnDate, type DateKey, type Todo } from "@kuaiban/core";
+import { fromDateKey, monthGrid, todosOnDate, type DateKey, type Todo, type TodoEdit } from "@kuaiban/core";
+import EditSheet from "./components/EditSheet.vue";
 import ReminderCard from "./components/ReminderCard.vue";
 import TodoRow from "./components/TodoRow.vue";
 import {
@@ -191,6 +192,32 @@ const {
 
 const showSettings = ref(false);
 
+/**
+ * 正在编辑哪一条（null = 没在编辑）。
+ *
+ * 编辑面板会**顶掉面板下方的全部内容**（提醒卡片、页签、清单、输入框），
+ * 因为 340px 宽的面板塞不下"一边看清单一边编辑"。
+ */
+const editingTodo = ref<Todo | null>(null);
+
+async function onSaveEdit(edit: TodoEdit) {
+  const target = editingTodo.value;
+  if (!target) return;
+  if (await store.editTodo(target, edit)) {
+    editingTodo.value = null;
+    store.flashNotice("已保存");
+  }
+}
+
+async function onRemoveEdit() {
+  const target = editingTodo.value;
+  if (!target) return;
+  if (await store.removeTodo(target)) {
+    editingTodo.value = null;
+    store.flashNotice("已删除");
+  }
+}
+
 /** 窄条角标：有未处理的到点时显示提醒条数（更要紧），否则显示今日未完成数 */
 const badgeCount = computed(() =>
   activeCount.value > 0 ? activeCount.value : remainingCount.value,
@@ -252,7 +279,7 @@ function friendlyDate(key: DateKey): string {
 const placeholder = computed(() => {
   switch (activeTab.value) {
     case "tomorrow":
-      return "添加明天的事，如 10:00 客户拜访";
+      return "添加明天的事，如 10:00 客户拜访 / 每周六 例会";
     case "inbox":
       return "随手记一条，之后可以排期…";
     case "calendar": {
@@ -260,7 +287,7 @@ const placeholder = computed(() => {
       return d ? `添加到 ${friendlyDate(d)}，如 9:30 交周报` : "";
     }
     default:
-      return "添加今天的事，如 9:30 交周报";
+      return "添加今天的事，如 9:30 交周报 / 每周六 10:00 例会";
   }
 });
 
@@ -308,21 +335,29 @@ async function submitDraft() {
   const raw = draft.value.trim();
   if (!raw) return;
 
-  const { title, time } = parseDraft(raw);
+  const { title, time, repeat } = parseDraft(raw);
   if (!title) return;
 
   const date = draftTargetDate.value;
   // 日历页签下没选日期就没有目标，静默返回（界面这时也不会显示输入框）
   if (date === null && activeTab.value !== "inbox") return;
 
-  const ok = await store.addTodo({ title, date, time });
+  const created = await store.addTodo({ title, date, time, repeat });
 
   // 只有真的写进去了才清空输入框。
   // 失败时保留内容 —— 用户不用重打一遍，而且"字还在"本身就是一种反馈。
-  if (ok) {
+  if (created) {
     draft.value = "";
+    // 重复待办的起始日会被对齐到第一个真正符合规则的日子
+    // （「工作日 打卡」建在周六 → 起始日推到周一）。
+    // 这件事**必须说出来** —— 用户明明选的今天，结果跑到下周一去了，
+    // 不说清楚就是"我的待办怎么不见了"。
     store.flashNotice(
-      date ? `已添加「${title}」到 ${friendlyDate(date)}` : `已添加「${title}」`,
+      created.date && created.date !== date
+        ? `已添加「${title}」· 按重复规则从 ${friendlyDate(created.date)} 开始`
+        : created.date
+          ? `已添加「${title}」到 ${friendlyDate(created.date)}`
+          : `已添加「${title}」`,
     );
     // 接着记下一条：点按钮会让输入框失焦，这里主动还回去
     draftEl.value?.focus();
@@ -397,6 +432,17 @@ function shiftMonth(delta: number) {
         >📌</button>
       </header>
 
+      <!-- 编辑中：整块换成编辑面板，避免 340px 里塞两套界面 -->
+      <EditSheet
+        v-if="editingTodo"
+        :todo="editingTodo"
+        :business-date="view.businessDate"
+        @save="onSaveEdit"
+        @cancel="editingTodo = null"
+        @remove="onRemoveEdit"
+      />
+
+      <template v-else>
       <!--
         提醒卡片放在页签之上：无论用户当前在看哪个页签，到点的事都立刻可见。
         没有提醒时它整块不渲染，不占地方。
@@ -526,6 +572,8 @@ function shiftMonth(delta: number) {
               :todo="todo"
               :highlight="todo.id === justAddedId"
               :date-key="calSelectedKey"
+              :business-date="view.businessDate"
+              @edit="editingTodo = todo"
               @toggle="toggleOnSelectedDay(todo)"
               @remove="store.removeTodo(todo)"
               @carry-over="store.moveTodoTo(todo, view.businessDate)"
@@ -552,8 +600,10 @@ function shiftMonth(delta: number) {
               :key="o.todo.id"
               :todo="o.todo"
               :date-key="view.businessDate"
+              :business-date="view.businessDate"
               :overdue-days="o.overdueDays"
               :needs-attention="o.needsAttention"
+              @edit="editingTodo = o.todo"
               @toggle="store.toggleDone(o.todo, view.businessDate)"
               @remove="store.removeTodo(o.todo)"
               @carry-over="store.moveTodoTo(o.todo, view.businessDate)"
@@ -573,6 +623,8 @@ function shiftMonth(delta: number) {
               :todo="todo"
               :highlight="todo.id === justAddedId"
               :date-key="visibleDateKey"
+              :business-date="view.businessDate"
+              @edit="editingTodo = todo"
               @toggle="onToggle(todo)"
               @remove="store.removeTodo(todo)"
               @carry-over="store.moveTodoTo(todo, view.businessDate)"
@@ -600,6 +652,8 @@ function shiftMonth(delta: number) {
                 :todo="todo"
                 :highlight="todo.id === justAddedId"
                 :date-key="view.businessDate"
+                :business-date="view.businessDate"
+                @edit="editingTodo = todo"
                 @toggle="store.toggleDone(todo, view.businessDate)"
                 @remove="store.removeTodo(todo)"
                 @carry-over="store.moveTodoTo(todo, view.businessDate)"
@@ -663,6 +717,7 @@ function shiftMonth(delta: number) {
           >✕</button>
         </div>
       </footer>
+      </template>
     </section>
   </div>
 </template>

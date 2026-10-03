@@ -16,6 +16,8 @@ import {
   isOccurrenceDone,
   type DateKey,
   type Todo,
+  type TodoEdit,
+  type RepeatRule,
   type TodoRepository,
   type TimeOfDay,
 } from "@kuaiban/core";
@@ -222,13 +224,25 @@ export interface AddOptions {
   title: string;
   date: DateKey | null;
   time?: TimeOfDay | null;
+  /** 重复规则（由输入框里的「每周六」这类词解析出来） */
+  repeat?: RepeatRule;
 }
 
 /** 新增。返回是否成功（失败原因在 `lastError` 里） */
-export async function addTodo({ title, date, time = null }: AddOptions): Promise<boolean> {
+export async function addTodo({
+  title,
+  date,
+  time = null,
+  repeat,
+}: AddOptions): Promise<Todo | null> {
   let created: Todo | null = null;
   const ok = await write("添加待办", async () => {
-    created = await requireService().add({ title, date, time });
+    created = await requireService().add({
+      title,
+      date,
+      time,
+      ...(repeat ? { repeat } : {}),
+    });
   });
   if (ok && created) {
     todos.value = [...todos.value, created];
@@ -240,7 +254,10 @@ export async function addTodo({ title, date, time = null }: AddOptions): Promise
       highlightTimer = null;
     }, HIGHLIGHT_MS);
   }
-  return ok;
+  // 返回**真正落盘的那条**（而不是 boolean）：起始日可能被重复规则对齐过
+  // （「工作日 打卡」建在周六 → 推到周一），界面需要拿实际日期去告诉用户
+  // "从哪天开始"，否则用户会以为自己选错了日期。
+  return ok ? created : null;
 }
 
 /** 勾选 / 取消勾选当前这一天的这一次 */
@@ -255,6 +272,16 @@ export async function toggleDone(todo: Todo, dateKey: DateKey): Promise<boolean>
 export async function moveTodoTo(todo: Todo, dateKey: DateKey | null): Promise<boolean> {
   return write("改期", async () => {
     replace(await requireService().moveTo(todo, dateKey));
+  });
+}
+
+/**
+ * 编辑：内容 / 日期 / 时间 / 重复规则。
+ * 一次改完一次落盘 —— 界面上用户就是点一次"保存"，不该留下半截状态。
+ */
+export async function editTodo(todo: Todo, edit: TodoEdit): Promise<boolean> {
+  return write("修改", async () => {
+    replace(await requireService().applyEdit(todo, edit));
   });
 }
 
@@ -310,6 +337,7 @@ export function useTodoStore() {
     toggleDone,
     moveTodoTo,
     removeTodo,
+    editTodo,
     carryOverAll,
     flashNotice,
   };

@@ -37,6 +37,16 @@ export const COACH_HINTS: Hint[] = [
     tabs: ["today", "tomorrow", "inbox"],
   },
   {
+    id: "repeat-keyword",
+    text: "重复的事直接写：每周六 10:00 例会、每天 9:30 吃药",
+    tabs: ["today", "tomorrow", "inbox"],
+  },
+  {
+    id: "tap-to-edit",
+    text: "点待办内容就能改时间、日期、重复规则",
+    tabs: ["today", "tomorrow", "calendar"],
+  },
+  {
     id: "overdue-carry",
     text: "没做完的会自动落到「昨日未完成」，鼠标移上去可一键搬今天",
     tabs: ["today"],
@@ -56,11 +66,11 @@ export const COACH_HINTS: Hint[] = [
 export function fallbackHint(ctx: { tab: HintTab; hasTarget: boolean }): Hint {
   switch (ctx.tab) {
     case "today":
-      return { id: "fb-today", text: "写「9:30 交周报」，时间会被自动识别" };
+      return { id: "fb-today", text: "可以写「每周六 10:00 交周报」" };
     case "tomorrow":
       return { id: "fb-tomorrow", text: "下班前把明天排好，到点它会自己出现" };
     case "inbox":
-      return { id: "fb-inbox", text: "想到什么先丢进来，之后再排到某天" };
+      return { id: "fb-inbox", text: "点一下内容就能改时间和重复" };
     case "calendar":
       return ctx.hasTarget
         ? { id: "fb-cal-picked", text: "加完会留在这天，可以接着加" }

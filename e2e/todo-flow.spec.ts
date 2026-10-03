@@ -354,21 +354,21 @@ test("点 ✕ 之后换成下一条，而且刷新也不会再教同一条", asy
   await expect(hint).toContainText("直接写时间");
 
   await page.locator(".hint-close").click();
-  await expect(hint).toContainText("昨日未完成");
+  await expect(hint).toContainText("重复的事");
 
   await page.reload();
   await expect(page.locator(".widget.expanded")).toBeVisible();
   await expect(page.locator(".hint-line")).not.toContainText("直接写时间");
-  await expect(page.locator(".hint-line")).toContainText("昨日未完成");
+  await expect(page.locator(".hint-line")).toContainText("重复的事");
 });
 
 test("学过的提示，换个页签也不会重新教一遍", async ({ page }) => {
   await expect(page.locator(".hint-line")).toContainText("直接写时间");
   await page.locator(".hint-close").click();
 
-  // 随笔页签：time-shortcut 已学过，应该给随笔专属的那条
+  // 随笔页签：time-shortcut 已学过，接着教"能写重复"（它在随笔页签也适用）
   await page.locator(".tab", { hasText: "随笔" }).click();
-  await expect(page.locator(".hint-line")).toContainText("排今天");
+  await expect(page.locator(".hint-line")).toContainText("重复的事");
 });
 
 test("所有技巧都教完之后，只剩一行淡淡的常驻备忘（不再有 ✕）", async ({ page }) => {
@@ -380,7 +380,7 @@ test("所有技巧都教完之后，只剩一行淡淡的常驻备忘（不再�
 
   const hint = page.locator(".hint-line");
   await expect(hint).not.toHaveClass(/coach/);
-  await expect(hint).toContainText("时间会被自动识别");
+  await expect(hint).toContainText("每周六");
   await expect(page.locator(".hint-close")).toHaveCount(0);
 });
 
@@ -579,4 +579,200 @@ test("设置里可以关掉早上汇总", async ({ page }) => {
 
   await row.locator(".set-toggle").click();
   await expect(row.locator(".set-toggle")).not.toHaveClass(/on/);
+});
+
+// ─────────────────────────────────────────────────────────────
+// 编辑：点待办内容就能改时间 / 日期 / 重复规则
+//
+// 用户反馈：「添加的待办如果开始的时候没有添加时间，添加成功后想要给这条
+// 待办加上时间的话怎么操作？」—— 原来根本改不了。以及「循环待办怎么添加？
+// 从当前的软件界面无法添加」—— 数据模型支持重复，但界面一直没有入口。
+// ─────────────────────────────────────────────────────────────
+
+test("点待办内容打开编辑面板", async ({ page }) => {
+  await page.fill(".add", "买咖啡豆");
+  await page.press(".add", "Enter");
+
+  await page.locator(".row", { hasText: "买咖啡豆" }).locator(".body").click();
+  await expect(page.locator(".edit-sheet")).toBeVisible();
+  await expect(page.locator(".es-title")).toContainText("编辑");
+  // 内容已填好，可以直接改
+  await expect(page.locator(".es-title-input")).toHaveValue("买咖啡豆");
+});
+
+test("给原本没时间的待办补上时间（用户问的第一件事）", async ({ page }) => {
+  const errors = collectErrors(page);
+
+  await page.fill(".add", "买咖啡豆");
+  await page.press(".add", "Enter");
+  await page.locator(".row", { hasText: "买咖啡豆" }).locator(".body").click();
+
+  await page.locator(".es-time").fill("09:30");
+  await page.locator(".es-btn.primary").click();
+
+  await expect(page.locator(".edit-sheet")).toHaveCount(0);
+  await expect(page.locator(".row", { hasText: "买咖啡豆" }).locator(".time")).toHaveText("09:30");
+  expect(errors).toEqual([]);
+});
+
+test("在编辑面板里把待办设成「每周六」（用户问的循环待办）", async ({ page }) => {
+  await page.fill(".add", "交周报");
+  await page.press(".add", "Enter");
+  await page.locator(".row", { hasText: "交周报" }).locator(".body").click();
+
+  await page.locator(".es-chip", { hasText: "每周" }).click();
+  await page.locator(".es-chip.round", { hasText: "六" }).click();
+  await page.locator(".es-btn.primary").click();
+
+  await expect(page.locator(".row", { hasText: "交周报" }).locator(".repeat")).toHaveText("🔁 每周六");
+});
+
+test("编辑面板：选每周却没选星期几时不给保存", async ({ page }) => {
+  await page.fill(".add", "开会");
+  await page.press(".add", "Enter");
+  await page.locator(".row", { hasText: "开会" }).locator(".body").click();
+
+  await page.locator(".es-chip", { hasText: "每周" }).click();
+  await expect(page.locator(".es-error")).toContainText("星期几");
+  await expect(page.locator(".es-btn.primary")).toBeDisabled();
+});
+
+test("编辑面板：时间写错会提示，也保存不了", async ({ page }) => {
+  await page.fill(".add", "开会");
+  await page.press(".add", "Enter");
+  await page.locator(".row", { hasText: "开会" }).locator(".body").click();
+
+  await page.locator(".es-time").fill("25:99");
+  await expect(page.locator(".es-error")).toContainText("时间格式");
+  await expect(page.locator(".es-btn.primary")).toBeDisabled();
+});
+
+test("编辑面板：可以取消，不改动任何东西", async ({ page }) => {
+  await page.fill(".add", "原样");
+  await page.press(".add", "Enter");
+  await page.locator(".row", { hasText: "原样" }).locator(".body").click();
+
+  await page.locator(".es-title-input").fill("改过的");
+  await page.locator(".es-btn", { hasText: "取消" }).click();
+
+  await expect(page.locator(".edit-sheet")).toHaveCount(0);
+  await expect(page.locator(".row", { hasText: "原样" })).toBeVisible();
+  await expect(page.locator(".row", { hasText: "改过的" })).toHaveCount(0);
+});
+
+test("编辑面板：可以删除", async ({ page }) => {
+  await page.fill(".add", "要删的");
+  await page.press(".add", "Enter");
+  await page.locator(".row", { hasText: "要删的" }).locator(".body").click();
+
+  await page.locator(".es-btn.danger").click();
+  await expect(page.locator(".edit-sheet")).toHaveCount(0);
+  await expect(page.locator(".row", { hasText: "要删的" })).toHaveCount(0);
+});
+
+// ─────────────────────────────────────────────────────────────
+// 输入框里直接写重复与中文时间
+// ─────────────────────────────────────────────────────────────
+
+test("输入「每周六 10:00 例会」→ 建出带重复的待办", async ({ page }) => {
+  await page.fill(".add", "每周六 10:00 例会");
+  await page.press(".add", "Enter");
+
+  const row = page.locator(".row", { hasText: "例会" });
+  await expect(row).toBeVisible();
+  await expect(row.locator(".repeat")).toHaveText("🔁 每周六");
+  await expect(row.locator(".time")).toHaveText("10:00");
+});
+
+test("输入「每天 9:30 吃药」→ 每天重复", async ({ page }) => {
+  await page.fill(".add", "每天 9:30 吃药");
+  await page.press(".add", "Enter");
+  await expect(page.locator(".row", { hasText: "吃药" }).locator(".repeat")).toHaveText("🔁 每天");
+});
+
+test("输入「下午2:30 去游泳」→ 识别成 14:30（用户问的第二件事）", async ({ page }) => {
+  await page.fill(".add", "下午2:30 去游泳");
+  await page.press(".add", "Enter");
+
+  const row = page.locator(".row", { hasText: "去游泳" });
+  await expect(row).toBeVisible();
+  await expect(row.locator(".title")).toHaveText("去游泳");
+  await expect(row.locator(".time")).toHaveText("14:30");
+});
+
+test("输入「工作日 打卡」→ 工作日重复；建在周末会顺延到下一个工作日并明确告知", async ({ page }) => {
+  const errors = collectErrors(page);
+  await page.fill(".add", "工作日 打卡");
+  await page.press(".add", "Enter");
+
+  const row = page.locator(".row", { hasText: "打卡" });
+  const dow = new Date().getDay(); // 0 = 周日, 6 = 周六
+
+  if (dow === 0 || dow === 6) {
+    // 周末：今天本来就不该有这条待办……
+    await expect(row).toHaveCount(0);
+    // ……但绝不能让它"悄悄地消失"。起始日会被对齐到下一个工作日，
+    // 提示里必须说清从哪天开始（曾经就是这里没声没息，用户以为数据丢了）。
+    await expect(page.locator(".toast")).toContainText("按重复规则从");
+  } else {
+    await expect(row.locator(".repeat")).toHaveText("🔁 工作日");
+  }
+  expect(errors).toEqual([]);
+});
+
+// ─────────────────────────────────────────────────────────────
+// 以后的事不能直接勾完成
+//
+// 用户的原话：「明天的待办不应该可以标记已完成，如果今天还有时间去做明天的
+// 事情的话，应该将明天的待办移到今天然后再标记完成。日历中未来的时间的待办
+// 也应该是同样的逻辑。」
+// ─────────────────────────────────────────────────────────────
+
+test("明天的事不能直接勾完成，只能「搬到今天」", async ({ page }) => {
+  await page.locator(".tab", { hasText: "明天" }).click();
+  await page.fill(".add", "明天的事");
+  await page.press(".add", "Enter");
+
+  const row = page.locator(".row", { hasText: "明天的事" });
+  await expect(row.locator(".check")).toBeDisabled();
+  await expect(row.locator(".future-tag")).toContainText("以后的事");
+
+  await row.hover();
+  await expect(row.locator(".act", { hasText: "搬到今天" })).toBeVisible();
+});
+
+test("搬到今天之后就可以勾完成了", async ({ page }) => {
+  await page.locator(".tab", { hasText: "明天" }).click();
+  await page.fill(".add", "提前做");
+  await page.press(".add", "Enter");
+
+  const row = page.locator(".row", { hasText: "提前做" });
+  await row.hover();
+  await row.locator(".act", { hasText: "搬到今天" }).click();
+
+  await page.locator(".tab", { hasText: "今天" }).click();
+  const todayRow = page.locator(".row", { hasText: "提前做" });
+  await expect(todayRow.locator(".check")).toBeEnabled();
+  await todayRow.locator(".check").click();
+  await expect(todayRow).toHaveCount(0);
+});
+
+test("日历里未来的日期同样不能勾完成", async ({ page }) => {
+  await page.locator(".tab", { hasText: "日历" }).click();
+  await page
+    .locator(".cal-cell:not(.dim)")
+    .filter({ hasText: /^20$/ })
+    .first()
+    .click();
+  await page.fill(".add", "20号的事");
+  await page.press(".add", "Enter");
+
+  const row = page.locator(".row", { hasText: "20号的事" });
+  await expect(row.locator(".check")).toBeDisabled();
+});
+
+test("今天的事照常可以勾完成", async ({ page }) => {
+  await page.fill(".add", "今天的事");
+  await page.press(".add", "Enter");
+  await expect(page.locator(".row", { hasText: "今天的事" }).locator(".check")).toBeEnabled();
 });

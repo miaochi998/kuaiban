@@ -23,15 +23,16 @@ describe("挑提示：先教，教完再闭嘴", () => {
       hasTarget: true,
       dismissed: new Set(["time-shortcut"]),
     });
-    expect(picked.hint.id).toBe("overdue-carry");
+    expect(picked.hint.id).toBe("repeat-keyword");
   });
 
   it("不在当前页签适用的技巧会被跳过", () => {
-    // overdue-carry 只在今天页签；随笔页签应直接跳到 inbox-schedule
+    // overdue-carry 只在今天页签；随笔页签应跳过它、也跳过已学过的，
+    // 直接给随笔专属的那条
     const picked = pickHint({
       tab: "inbox",
       hasTarget: true,
-      dismissed: new Set(["time-shortcut"]),
+      dismissed: new Set(["time-shortcut", "repeat-keyword"]),
     });
     expect(picked.hint.id).toBe("inbox-schedule");
   });

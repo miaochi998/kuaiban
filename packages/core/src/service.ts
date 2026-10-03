@@ -13,8 +13,10 @@
  * 这样和 Vue 的响应式数组配合最自然，也不会出现"两处各有一份真相"。
  */
 
-import type { DateKey, NewTodoInput, Todo } from "@kuaiban/shared";
+import type { DateKey, NewTodoInput, RepeatRule, TimeOfDay, Todo } from "@kuaiban/shared";
 import type { TodoRepository } from "./repository";
+import { addDays } from "./date";
+import { occursOn } from "./repeat";
 import {
   completeOccurrence,
   createTodo,
@@ -32,6 +34,23 @@ export interface AddTodoOptions {
   id?: string;
 }
 
+/**
+ * 一次编辑里可以改哪些东西。
+ *
+ * 刻意做成"一个整体的修改请求"，而不是让界面分别调 moveTo / updateTodo：
+ * 界面上用户是**一次点保存**，那就该是一次写入 —— 否则中途失败会留下
+ * "日期改了、标题没改"这种半截状态。
+ *
+ * 字段为 `undefined` = 不改这一项；`date: null` = 退回随笔区。
+ */
+export interface TodoEdit {
+  title?: string;
+  date?: DateKey | null;
+  time?: TimeOfDay | null;
+  repeat?: RepeatRule;
+  remindBefore?: number;
+}
+
 export class TodoService {
   constructor(
     private readonly repo: TodoRepository,
@@ -46,7 +65,9 @@ export class TodoService {
 
   /** 新建一条并立即落盘 */
   async add(input: NewTodoInput, opts: AddTodoOptions = {}): Promise<Todo> {
-    const todo = createTodo(input, { now: this.clock(), ...(opts.id ? { id: opts.id } : {}) });
+    const todo = this.aligned(
+      createTodo(input, { now: this.clock(), ...(opts.id ? { id: opts.id } : {}) }),
+    );
     await this.repo.upsert([todo]);
     return todo;
   }
@@ -80,12 +101,67 @@ export class TodoService {
     return next;
   }
 
-  /** 编辑内容 / 时间 / 提醒 / 重复规则 */
-  async edit(
-    todo: Todo,
-    patch: Parameters<typeof updateTodo>[1],
-  ): Promise<Todo> {
-    const next = updateTodo(todo, patch, this.clock());
+  /**
+   * 起始日对齐到重复规则。
+   *
+   * 为什么必须做：一条「工作日」重复的待办如果起始日填的是**周六**，
+   * 它永远不满足自己的规则 —— 建完就在清单里**消失**，用户会以为数据丢了。
+   * （真实踩到过：用户在周六输入「工作日 打卡」，界面毫无反应。）
+   *
+   * 所以把起始日往后推到第一个真正满足规则的日子：起始日从此是**真的**，
+   * 日历上也能在正确的日子看到它。
+   */
+  private aligned(todo: Todo): Todo {
+    if (todo.date === null || todo.repeat.kind === "none") return todo;
+
+    let day = todo.date;
+    // 最多找 40 天：每月 31 号这种规则也可能要跨月才命中。
+    // 找不到就原样返回 —— 宁可日期不理想，也不能在这里死循环。
+    for (let i = 0; i < 40; i++) {
+      if (occursOn(todo, day)) {
+        return day === todo.date ? todo : { ...todo, date: day };
+      }
+      day = addDays(day, 1);
+    }
+    return todo;
+  }
+
+  /**
+   * 编辑：内容 / 日期 / 时间 / 重复规则，一次改完并落盘。
+   *
+   * 两个细节值得说明：
+   * - **只对传进来的字段动手**：`undefined` 表示"这一项别改"，
+   *   所以不能直接把 edit 展开进对象（那会把没传的字段变成 undefined）。
+   * - **给原本没时间的待办加时间时自动开提醒**：和新建时的默认一致
+   *   （有时间 → 开提醒；没时间 → 关提醒，避免噪音）。
+   *   只在"原来没有时间"时才自动开 —— 用户自己关掉的提醒不该被改个时间又打开。
+   */
+  async applyEdit(todo: Todo, edit: TodoEdit): Promise<Todo> {
+    const now = this.clock();
+    let next = todo;
+
+    if (edit.date !== undefined) {
+      next = moveToDate(next, edit.date, now);
+    }
+
+    next = updateTodo(
+      next,
+      {
+        ...(edit.title !== undefined ? { title: edit.title } : {}),
+        ...(edit.time !== undefined ? { time: edit.time } : {}),
+        ...(edit.repeat !== undefined ? { repeat: edit.repeat } : {}),
+        ...(edit.remindBefore !== undefined ? { remindBefore: edit.remindBefore } : {}),
+      },
+      now,
+    );
+
+    if (edit.time !== undefined && edit.time !== null && todo.time === null) {
+      next = { ...next, remind: true };
+    }
+
+    // 改了重复规则（或日期）之后同样要重新对齐，理由见 aligned()
+    next = this.aligned(next);
+
     await this.repo.upsert([next]);
     return next;
   }

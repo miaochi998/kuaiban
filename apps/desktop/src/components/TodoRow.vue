@@ -6,6 +6,8 @@ const props = defineProps<{
   todo: Todo;
   /** 勾选/跳过要带上"哪一天"，重复任务的完成是按天的 */
   dateKey: DateKey;
+  /** 当前业务日 —— 用来判断"这是不是以后的事" */
+  businessDate: DateKey;
   /** 逾期天数（0 = 不逾期） */
   overdueDays?: number;
   /** 是否拖到需要提醒的程度 */
@@ -18,44 +20,85 @@ const emit = defineEmits<{
   (e: "toggle"): void;
   (e: "remove"): void;
   (e: "carry-over"): void;
+  (e: "edit"): void;
 }>();
 
 const done = computed(() => isOccurrenceDone(props.todo, props.dateKey));
 const isOverdue = computed(() => (props.overdueDays ?? 0) > 0);
 
 /**
- * 能不能"一键挪到某天"。
- * - 逾期的一次性待办 → 搬到今天
- * - 随笔里没排期的（date 为 null）→ 排到今天
- * 后者本来只能看不能动，记进随笔的东西就"烂"在那儿了。
+ * 是不是"排在未来"的事。
+ *
+ * 勾选完成的含义是**"我今天把它做掉了"**。把明天（或更远）的事直接勾掉，
+ * "完成时间"和"计划日期"就打架了 —— 而真实动作其实是"我提前做了"，
+ * 对应的操作应该是**先搬到今天、再勾完成**。所以未来的事不允许直接勾。
  */
-const canCarry = computed(() => isOverdue.value || props.todo.date === null);
-const carryLabel = computed(() => (props.todo.date === null ? "排今天" : "搬今天"));
+const isFuture = computed(
+  () => props.todo.date !== null && props.todo.date > props.businessDate,
+);
+
+const completable = computed(() => !isFuture.value);
+
+/**
+ * 能不能"一键挪到某天"：
+ * - 逾期的一次性待办 → 搬今天
+ * - 随笔里没排期的 → 排今天（原来只能看不能动，记进去就"烂"在那儿了）
+ * - **未来排期的事** → 搬到今天（提前做）
+ */
+const canCarry = computed(
+  () => isOverdue.value || props.todo.date === null || isFuture.value,
+);
+
+const carryLabel = computed(() => {
+  if (isOverdue.value) return "搬今天";
+  if (props.todo.date === null) return "排今天";
+  return "搬到今天";
+});
+
 const repeatLabel = computed(() =>
   props.todo.repeat.kind === "none" ? "" : describeRepeat(props.todo.repeat),
 );
+
+const checkTitle = computed(() => {
+  if (!completable.value) return "这是以后的事：先「搬到今天」，再标记完成";
+  return done.value ? "取消完成" : "标记完成";
+});
 </script>
 
 <template>
-  <div class="row" :class="{ done, overdue: isOverdue, flash: highlight }">
+  <div class="row" :class="{ done, overdue: isOverdue, future: isFuture, flash: highlight }">
+    <!--
+      完成勾选做成**圆圈**而不是方框：方框看起来像"多选"，而这里表达的是
+      "这件事做完了"。圆圈 + 打勾是待办类产品的通用完成语义
+      （用户反馈过方框让人困惑）。
+    -->
     <button
       class="check"
-      :class="{ on: done }"
+      :class="{ on: done, blocked: !completable }"
       type="button"
-      :aria-label="done ? '标记未完成' : '标记完成'"
+      :disabled="!completable"
+      :aria-label="checkTitle"
+      :title="checkTitle"
       @click="emit('toggle')"
     ></button>
 
-    <div class="body">
+    <!-- 点内容区打开编辑面板：改内容 / 日期 / 时间 / 重复规则 -->
+    <div
+      class="body"
+      role="button"
+      tabindex="0"
+      title="点击修改内容、时间、重复规则"
+      @click="emit('edit')"
+      @keydown.enter="emit('edit')"
+    >
       <div class="title">{{ todo.title }}</div>
       <div class="meta">
         <span v-if="todo.time" class="time">{{ todo.time }}</span>
         <span v-if="repeatLabel" class="repeat">🔁 {{ repeatLabel }}</span>
-        <span
-          v-if="isOverdue"
-          class="delay"
-          :class="{ hot: needsAttention }"
-        >拖了 {{ overdueDays }} 天</span>
+        <span v-if="isFuture" class="future-tag">以后的事</span>
+        <span v-if="isOverdue" class="delay" :class="{ hot: needsAttention }">
+          拖了 {{ overdueDays }} 天
+        </span>
       </div>
     </div>
 
@@ -105,23 +148,24 @@ const repeatLabel = computed(() =>
   }
 }
 
-/* ── 勾选框 ── */
+/* ── 完成勾选：圆圈 ── */
 .check {
   position: relative;
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   margin-top: 1px;
   flex: none;
   padding: 0;
   border: 1.5px solid #cbd5e1;
-  border-radius: 5px;
+  border-radius: 50%;
   background: transparent;
   cursor: pointer;
   transition: border-color 0.13s, background 0.13s;
 }
 
-.check:hover {
+.check:hover:not(:disabled) {
   border-color: #3b6ef6;
+  background: rgba(59, 110, 246, 0.08);
 }
 
 .check.on {
@@ -132,8 +176,8 @@ const repeatLabel = computed(() =>
 .check.on::after {
   content: "";
   position: absolute;
-  left: 4px;
-  top: 1px;
+  left: 4.5px;
+  top: 1.5px;
   width: 6px;
   height: 3px;
   border-left: 1.5px solid #fff;
@@ -141,10 +185,24 @@ const repeatLabel = computed(() =>
   transform: rotate(-45deg);
 }
 
+/* 以后的事不能勾：虚线 + 不可点，一眼看出"不是坏了，是现在不该勾" */
+.check.blocked {
+  border-style: dashed;
+  border-color: #e2e8f0;
+  cursor: default;
+}
+
 /* ── 内容 ── */
 .body {
   flex: 1;
   min-width: 0;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.body:focus-visible {
+  outline: 2px solid rgba(59, 110, 246, 0.5);
+  outline-offset: 1px;
 }
 
 .title {
@@ -176,6 +234,13 @@ const repeatLabel = computed(() =>
 .time {
   color: #3b6ef6;
   font-weight: 600;
+}
+
+.future-tag {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(59, 110, 246, 0.1);
+  color: #6b8fd8;
 }
 
 .delay {

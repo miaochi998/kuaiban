@@ -69,12 +69,15 @@ beforeEach(() => {
 });
 
 describe("成功路径：写进去了就要让用户看得出来", () => {
-  it("addTodo 返回 true，清单立刻多一条，没有错误", async () => {
+  it("addTodo 返回真正落盘的那条，清单立刻多一条，没有错误", async () => {
     const store = await freshStore(new MemoryTodoRepository());
 
-    const ok = await store.addTodo({ title: "写周报", date: "2026-10-03" });
+    const created = await store.addTodo({ title: "写周报", date: "2026-10-03" });
+    // 返回实体而不是 boolean：起始日可能被重复规则改过，界面要拿实际日期说话
+    expect(created?.title).toBe("写周报");
+    expect(created?.date).toBe("2026-10-03");
+    expect(created).not.toBeNull();
 
-    expect(ok).toBe(true);
     expect(store.lastError.value).toBeNull();
     expect(store.todos.value).toHaveLength(1);
     expect(store.todos.value[0]!.title).toBe("写周报");
@@ -105,12 +108,12 @@ describe("成功路径：写进去了就要让用户看得出来", () => {
 });
 
 describe("失败路径：绝不能静默 —— 这是本次修复的核心", () => {
-  it("写库失败时 addTodo 返回 false，并且把原因写进 lastError", async () => {
+  it("写库失败时 addTodo 返回 null，并且把原因写进 lastError", async () => {
     const store = await freshStore(new ExplodingRepository("磁盘写满了"));
 
-    const ok = await store.addTodo({ title: "写周报", date: "2026-10-03" });
+    const created = await store.addTodo({ title: "写周报", date: "2026-10-03" });
 
-    expect(ok).toBe(false);
+    expect(created).toBeNull();
     expect(store.lastError.value).toContain("添加待办失败");
     expect(store.lastError.value).toContain("磁盘写满了");
   });
@@ -152,7 +155,7 @@ describe("失败路径：绝不能静默 —— 这是本次修复的核心", ()
     const mod = await import("../src/store/todos");
     await mod.initTodoStore(new MemoryTodoRepository());
     const store2 = mod.useTodoStore();
-    expect(await store2.addTodo({ title: "会成功的", date: "2026-10-03" })).toBe(true);
+    expect(await store2.addTodo({ title: "会成功的", date: "2026-10-03" })).not.toBeNull();
     expect(store2.lastError.value).toBeNull();
   });
 
@@ -163,7 +166,7 @@ describe("失败路径：绝不能静默 —— 这是本次修复的核心", ()
 
     const ok = await store.addTodo({ title: "x", date: null });
 
-    expect(ok).toBe(false);
+    expect(ok).toBeNull();
     expect(store.lastError.value).toContain("添加待办失败");
   });
 });

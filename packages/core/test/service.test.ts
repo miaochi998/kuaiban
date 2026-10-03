@@ -4,6 +4,7 @@ import {
   TodoService,
   buildDailyView,
   dueReminders,
+  occursOn,
   type Todo,
 } from "../src";
 import { MON } from "./helpers";
@@ -150,12 +151,72 @@ describe("跳过本次 / 编辑 / 删除", () => {
   it("编辑内容与时间，落盘生效", async () => {
     const { service, repo } = make();
     const t = await service.add({ title: "开会", date: MON });
-    await service.edit(t, { title: "评审会", time: "14:00" });
+    await service.applyEdit(t, { title: "评审会", time: "14:00" });
 
     const saved = (await repo.list())[0]!;
     expect(saved.title).toBe("评审会");
     expect(saved.time).toBe("14:00");
-    expect(saved.remind).toBe(false); // 改时间不会自动开提醒，由界面显式决定
+  });
+
+  it("给原本没时间的待办补上时间 → 自动开提醒（与新建时的默认一致）", async () => {
+    const { service, repo } = make();
+    const t = await service.add({ title: "买咖啡豆", date: MON }); // 没时间 → 默认不开提醒
+    expect(t.remind).toBe(false);
+
+    await service.applyEdit(t, { time: "09:30" });
+
+    expect((await repo.list())[0]!.remind).toBe(true);
+  });
+
+  it("只改传进来的字段，没传的一律不动", async () => {
+    const { service, repo } = make();
+    const t = await service.add({ title: "开会", date: MON, time: "09:30", note: "带上合同" });
+    await service.applyEdit(t, { title: "评审会" });
+
+    const saved = (await repo.list())[0]!;
+    expect(saved.title).toBe("评审会");
+    expect(saved.time).toBe("09:30"); // 没传 time → 保持
+    expect(saved.note).toBe("带上合同");
+    expect(saved.date).toBe(MON);
+  });
+
+  it("一次改多个字段（界面上的『保存』就是一次写入）", async () => {
+    const { service, repo } = make();
+    const t = await service.add({ title: "开会", date: MON });
+
+    await service.applyEdit(t, {
+      title: "周会",
+      date: "2026-06-20",
+      time: "10:00",
+      repeat: { kind: "weekly", weekdays: [6] },
+    });
+
+    const saved = (await repo.list())[0]!;
+    expect(saved).toMatchObject({
+      title: "周会",
+      date: "2026-06-20",
+      time: "10:00",
+      repeat: { kind: "weekly", weekdays: [6] },
+      remind: true,
+    });
+  });
+
+  it("可以把日期改成 null，退回随笔区", async () => {
+    const { service, repo } = make();
+    const t = await service.add({ title: "灵感", date: MON });
+    await service.applyEdit(t, { date: null });
+    expect((await repo.list())[0]!.date).toBeNull();
+  });
+
+  it("可以把重复规则改掉，也可以改成不重复", async () => {
+    const { service, repo } = make();
+    const t = await service.add({ title: "周会", date: MON, repeat: { kind: "weekly", weekdays: [1] } });
+
+    await service.applyEdit(t, { repeat: { kind: "daily" } });
+    expect((await repo.list())[0]!.repeat).toEqual({ kind: "daily" });
+
+    await service.applyEdit(t, { repeat: { kind: "none" } });
+    expect((await repo.list())[0]!.repeat).toEqual({ kind: "none" });
   });
 
   it("删除是软删除：视图里消失，但库里留着给同步看", async () => {
@@ -243,5 +304,84 @@ describe("put 批量落盘", () => {
     const { service, repo } = make();
     await service.put([]);
     expect(await repo.list()).toHaveLength(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// 起始日对齐重复规则
+//
+// 踩到的真实 bug：用户在**周六**输入「工作日 打卡」，建完这条待办就在清单里
+// 消失了 —— 因为「工作日」只匹配周一到周五，而它的起始日填的是周六，
+// 永远不满足自己的规则。用户会以为数据丢了。
+// ─────────────────────────────────────────────────────────────
+
+describe("起始日对齐重复规则", () => {
+  // 2026-10-03 是周六
+  const SAT = "2026-10-03";
+
+  it("「工作日」建在周六 → 起始日推到下一个工作日（周一）", async () => {
+    const { service } = make();
+    const t = await service.add({ title: "打卡", date: SAT, repeat: { kind: "weekdays" } });
+
+    expect(t.date).toBe("2026-10-05"); // 周一
+    expect(occursOn(t, "2026-10-05")).toBe(true);
+    expect(occursOn(t, SAT)).toBe(false);
+  });
+
+  it("起始日本来就满足规则 → 不动它", async () => {
+    const { service } = make();
+    // 周六 + 每周六 → 当天就满足
+    const t = await service.add({
+      title: "周会",
+      date: SAT,
+      repeat: { kind: "weekly", weekdays: [6] },
+    });
+    expect(t.date).toBe(SAT);
+  });
+
+  it("「每月15号」建在 3 号 → 起始日推到 15 号", async () => {
+    const { service } = make();
+    const t = await service.add({
+      title: "交材料",
+      date: "2026-10-03",
+      repeat: { kind: "monthly", days: [15] },
+    });
+    expect(t.date).toBe("2026-10-15");
+  });
+
+  it("不重复的待办不动它的日期", async () => {
+    const { service } = make();
+    const t = await service.add({ title: "买咖啡豆", date: SAT });
+    expect(t.date).toBe(SAT);
+  });
+
+  it("随笔（无日期）不参与对齐", async () => {
+    const { service } = make();
+    const t = await service.add({ title: "灵感", date: null, repeat: { kind: "weekdays" } });
+    expect(t.date).toBeNull();
+  });
+
+  it("建出来的待办在它的起始日一定能看到（这是这条规则存在的意义）", async () => {
+    const { service } = make();
+    const t = await service.add({ title: "打卡", date: SAT, repeat: { kind: "weekdays" } });
+    // 起始日必须是真正会发生的那天，否则日历和对齐后的日期就对不上了
+    expect(occursOn(t, t.date as string)).toBe(true);
+  });
+
+  it("编辑时把日期改到不匹配的一天，也会重新对齐", async () => {
+    const { service } = make();
+    const t = await service.add({ title: "打卡", date: "2026-10-05", repeat: { kind: "weekdays" } });
+    expect(t.date).toBe("2026-10-05");
+
+    // 改到周六 → 应该被推回下一个工作日
+    const edited = await service.applyEdit(t, { date: SAT });
+    expect(edited.date).toBe("2026-10-05");
+  });
+
+  it("编辑时把规则改成不匹配当前日期的，同样对齐", async () => {
+    const { service } = make();
+    const t = await service.add({ title: "打卡", date: SAT });
+    const edited = await service.applyEdit(t, { repeat: { kind: "weekdays" } });
+    expect(edited.date).toBe("2026-10-05");
   });
 });
