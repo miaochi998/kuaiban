@@ -47,7 +47,7 @@ export async function createSqliteTodoRepository(): Promise<TodoRepository> {
     async list(): Promise<Todo[]> {
       let rows: TodoRow[];
       try {
-        rows = await db.select<TodoRow[]>("SELECT * FROM todos");
+        rows = (await db.select("SELECT * FROM todos")) as TodoRow[];
       } catch (err) {
         throw new Error(`[快办] 读取待办失败：${describeError(err)}`);
       }

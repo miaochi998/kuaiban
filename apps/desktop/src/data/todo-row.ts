@@ -43,6 +43,27 @@ export interface TodoRow {
 
 const TODO_STATUSES: readonly string[] = ["pending", "done", "cancelled"];
 
+const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/**
+ * 清洗日期列：只有合法的 `YYYY-MM-DD` 才保留，其余（空串、垃圾、格式不对）一律当"未排期"。
+ *
+ * 为什么必须做 —— 真实踩过的坑：
+ * 库里有一条 `date = ''` 的坏记录，`fromDateKey('')` 在渲染期间抛错，
+ * **整个界面渲染失败**，用户看到的是"永远停在正在读取…"，
+ * 既看不到别的待办，也完全不知道发生了什么。
+ * 一条坏数据绝不该让整个清单打不开 —— 这和 `parseRepeat` 的降级是同一个道理。
+ */
+export function sanitizeDateKey(raw: unknown): string | null {
+  return typeof raw === "string" && DATE_KEY_RE.test(raw) ? raw : null;
+}
+
+/** 清洗时间列：只有合法的 `HH:mm` 才保留，其余当"全天事项" */
+export function sanitizeTime(raw: unknown): string | null {
+  return typeof raw === "string" && TIME_RE.test(raw) ? raw : null;
+}
+
 /** 把任意抛出物转成能读的消息（Tauri 抛的不一定是 Error） */
 export function describeError(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -110,8 +131,8 @@ export function rowToTodo(row: TodoRow): Todo {
   return {
     id: row.id,
     title: row.title,
-    date: row.date,
-    time: row.time,
+    date: sanitizeDateKey(row.date),
+    time: sanitizeTime(row.time),
     status: parseStatus(row.status, row.id),
     repeat: parseRepeat(row.repeat, row.id),
     lastDoneDate: row.last_done_date,

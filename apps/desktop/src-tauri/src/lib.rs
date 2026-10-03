@@ -641,6 +641,21 @@ pub fn run() {
                 let _ = window.show();
             }
 
+            // 调试开关：`KUAIBAN_DEBUG_EXPANDED=1` 时启动即展开并钉住。
+            //
+            // 为什么需要它：挂件默认收起，展开要靠"鼠标悬停"。
+            // 而自动化验证（截图 / 脚本）没法真的把光标移过去 ——
+            // 合成鼠标事件需要进程具备"辅助功能"权限，拿不到就静默失效。
+            // 有了这个开关，才能对**真实应用**做端到端截图验证
+            // （SQLite 读出来的数据到底有没有正确渲染到面板上）。
+            // 不设这个环境变量时行为完全不变。
+            if std::env::var("KUAIBAN_DEBUG_EXPANDED").as_deref() == Ok("1") {
+                let state = app.state::<WidgetState>();
+                state.pinned.store(true, Ordering::Relaxed);
+                set_expanded_inner(&handle, true);
+                println!("[widget] KUAIBAN_DEBUG_EXPANDED=1 —— 启动即展开（调试用）");
+            }
+
             build_tray(&handle)?;
             spawn_hover_watcher(handle);
 

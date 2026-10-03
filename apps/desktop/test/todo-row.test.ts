@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { createTodo, type Todo } from "@kuaiban/core";
+import { buildDailyView, createTodo, type Todo } from "@kuaiban/core";
 import {
   TODO_COLUMNS,
   UPSERT_SQL,
@@ -19,6 +19,8 @@ import {
   parseSkippedDates,
   parseStatus,
   rowToTodo,
+  sanitizeDateKey,
+  sanitizeTime,
   todoToParams,
   type TodoRow,
 } from "../src/data/todo-row";
@@ -228,5 +230,53 @@ describe("空值与默认值", () => {
     const row = toRow(sample({ repeat: { kind: "weekly", weekdays: [1] } }));
     expect(JSON.parse(row.repeat)).toEqual({ kind: "weekly", weekdays: [1] });
     expect(JSON.parse(row.skipped_dates)).toEqual([]);
+  });
+});
+
+describe("坏数据的最后一道防线：date / time 清洗", () => {
+  it("合法的日期与时间原样保留", () => {
+    expect(sanitizeDateKey("2026-10-03")).toBe("2026-10-03");
+    expect(sanitizeTime("09:30")).toBe("09:30");
+    expect(sanitizeTime("00:00")).toBe("00:00");
+    expect(sanitizeTime("23:59")).toBe("23:59");
+  });
+
+  it("空字符串当 null —— 真实踩过的坑：一条 date='' 会让整个界面渲染崩掉", () => {
+    expect(sanitizeDateKey("")).toBeNull();
+    expect(sanitizeTime("")).toBeNull();
+  });
+
+  it("格式不对的一律当 null，不抛异常", () => {
+    for (const bad of ["2026/10/03", "26-10-03", "2026-1-3", "今天", "  ", "null"]) {
+      expect(sanitizeDateKey(bad)).toBeNull();
+    }
+    for (const bad of ["9:30", "25:00", "09:60", "9点半", "abc"]) {
+      expect(sanitizeTime(bad)).toBeNull();
+    }
+  });
+
+  it("非字符串也当 null（数据库里可能是数字）", () => {
+    expect(sanitizeDateKey(null)).toBeNull();
+    expect(sanitizeDateKey(20261003)).toBeNull();
+    expect(sanitizeTime(null)).toBeNull();
+    expect(sanitizeTime(930)).toBeNull();
+  });
+
+  it("整行 date='' 时退化成『未排期』，其余字段照常读出来", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const row: TodoRow = { ...toRow(sample()), date: "", time: "" };
+    const todo = rowToTodo(row);
+    expect(todo.date).toBeNull();
+    expect(todo.time).toBeNull();
+    expect(todo.title).toBe("交周报");
+    warn.mockRestore();
+  });
+
+  it("清洗后的对象能安全喂给大脑的视图函数（不会抛「非法的日期 key」）", () => {
+    const row: TodoRow = { ...toRow(sample()), date: "", time: "" };
+    const todo = rowToTodo(row);
+    // 这一步以前会抛 "非法的日期 key: """，导致整个界面渲染失败
+    expect(() => buildDailyView([todo], { now: NOW })).not.toThrow();
+    expect(buildDailyView([todo], { now: NOW }).inbox.map((t) => t.id)).toEqual([todo.id]);
   });
 });

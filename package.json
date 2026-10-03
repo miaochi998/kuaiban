@@ -9,7 +9,13 @@
   },
   "scripts": {
     "dev": "pnpm --filter @kuaiban/desktop tauri dev",
-    "build": "pnpm --filter @kuaiban/desktop tauri build",    "test": "pnpm -r --if-present test",
-    "typecheck": "pnpm -r --if-present typecheck"
+    "build": "pnpm --filter @kuaiban/desktop tauri build",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "e2e": "playwright test",
+    "e2e:ui": "playwright test --ui"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
   }
 }

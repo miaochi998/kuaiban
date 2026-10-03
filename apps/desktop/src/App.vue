@@ -103,7 +103,9 @@ onMounted(async () => {
     expanded.value = status.expanded;
     pinned.value = status.pinned;
   } catch {
-    /* 非 Tauri 环境（浏览器调样式）忽略 */
+    // 非 Tauri 环境（浏览器里调样式 / 自动化测试）：
+    // 没有"外壳"可以悬停展开，直接把面板显示出来，否则界面完全不可见。
+    expanded.value = true;
   }
 
   try {
@@ -147,7 +149,20 @@ onUnmounted(() => {
 // ─────────────────────────────────────────────────────────────
 
 const store = useTodoStore();
-const { view, activeTab, ready, fatalError, remainingCount, visibleTodos, visibleDateKey } = store;
+const {
+  view,
+  activeTab,
+  ready,
+  fatalError,
+  storageWarning,
+  loadPhase,
+  remainingCount,
+  visibleTodos,
+  visibleDateKey,
+  lastError,
+  notice,
+  justAddedId,
+} = store;
 
 const showDone = ref(false);
 const draft = ref("");
@@ -217,8 +232,17 @@ async function submitDraft() {
         ? null
         : view.value.businessDate;
 
-  await store.addTodo({ title, date, time });
-  draft.value = "";
+  const ok = await store.addTodo({ title, date, time });
+
+  // 只有真的写进去了才清空输入框。
+  // 失败时保留内容 —— 用户不用重打一遍，而且"字还在"本身就是一种反馈。
+  if (ok) {
+    draft.value = "";
+    store.flashNotice(`已添加「${title}」`);
+    // 接着记下一条：点按钮会让输入框失焦，这里主动还回去
+    draftEl.value?.focus();
+    void grabKeyboard();
+  }
 }
 
 async function onToggle(todo: Todo) {
@@ -291,11 +315,15 @@ function shiftMonth(delta: number) {
       </nav>
 
       <div class="scroll">
+        <!-- 存不下来是比"用不了"更危险的事：用户会以为已经存好了。
+             所以这条警告一直摆着，不自动消失。 -->
+        <p v-if="storageWarning" class="storage-warn">⚠ {{ storageWarning }}</p>
+
         <p v-if="fatalError" class="fatal">
           读取本地数据失败：{{ fatalError }}
         </p>
 
-        <p v-else-if="!ready" class="loading">正在读取…</p>
+        <p v-else-if="!ready" class="loading">{{ loadPhase }}</p>
 
         <!-- ── 日历页签 ── -->
         <template v-else-if="activeTab === 'calendar'">
@@ -328,6 +356,7 @@ function shiftMonth(delta: number) {
               v-for="todo in calSelectedTodos"
               :key="todo.id"
               :todo="todo"
+              :highlight="todo.id === justAddedId"
               :date-key="calSelectedKey"
               @toggle="toggleOnSelectedDay(todo)"
               @remove="store.removeTodo(todo)"
@@ -374,6 +403,7 @@ function shiftMonth(delta: number) {
               v-for="todo in visibleTodos"
               :key="todo.id"
               :todo="todo"
+              :highlight="todo.id === justAddedId"
               :date-key="visibleDateKey"
               @toggle="onToggle(todo)"
               @remove="store.removeTodo(todo)"
@@ -400,6 +430,7 @@ function shiftMonth(delta: number) {
                 v-for="todo in view.doneToday"
                 :key="todo.id"
                 :todo="todo"
+                :highlight="todo.id === justAddedId"
                 :date-key="view.businessDate"
                 @toggle="store.toggleDone(todo, view.businessDate)"
                 @remove="store.removeTodo(todo)"
@@ -411,6 +442,14 @@ function shiftMonth(delta: number) {
       </div>
 
       <footer v-if="activeTab !== 'calendar'" class="foot">
+        <!--
+          操作反馈。用户反馈过"点了回车没有任何反应"——
+          所以每一次写操作都必须在这里留下看得见的一句话：
+          成功给一闪而过的确认，失败给留得住的错误原因。
+        -->
+        <p v-if="lastError" class="alert" role="alert">⚠ {{ lastError }}</p>
+        <p v-else-if="notice" class="toast" role="status">✓ {{ notice }}</p>
+
         <div class="add-row">
           <input
             ref="draftEl"
@@ -425,16 +464,16 @@ function shiftMonth(delta: number) {
           <!--
             发送按钮。两种提交方式都保留：回车（老手更快）与点按钮（新手直观）。
 
-            `@mousedown.prevent` 是必须的：不拦住的话点按钮会让输入框先 blur，
-            于是 `onInputBlur` 会交还键盘焦点并开始收起倒计时 —— 用户想连记几条时，
-            面板会在半路收走。prevent 之后焦点留在输入框，可以接着打第二条。
+            点按钮会让输入框失焦，所以提交成功后由 `submitDraft` 主动把焦点还回来，
+            用户可以接着打第二条。不靠 `@mousedown.prevent` 来"阻止失焦"：
+            实测（macOS WKWebView）那样做会让 click 事件根本不触发 —— 按钮点了没反应。
+            而且也不需要它：鼠标在面板内时 `scheduleCollapse` 本来就不会开始倒计时。
           -->
           <button
             class="send"
             type="button"
             :disabled="!canSubmit"
             title="添加（也可以直接按回车）"
-            @mousedown.prevent
             @click="submitDraft"
           >添加</button>
         </div>
@@ -764,6 +803,18 @@ body {
   color: #b91c1c;
 }
 
+/* "数据存不下来"的常驻警告：琥珀色，不自动消失 */
+.storage-warn {
+  margin: 6px 8px 8px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: rgba(245, 158, 11, 0.13);
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: #92400e;
+  word-break: break-word;
+}
+
 /* ── 日历 ── */
 .cal-head {
   display: flex;
@@ -880,6 +931,40 @@ body {
   display: flex;
   align-items: stretch;
   gap: 6px;
+}
+
+/* 操作反馈：成功一闪而过，失败留得住 */
+.alert {
+  margin: 0 0 6px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: rgba(220, 38, 38, 0.08);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #b91c1c;
+  word-break: break-word;
+}
+
+.toast {
+  margin: 0 0 6px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: rgba(22, 163, 74, 0.09);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #15803d;
+  animation: toast-in 0.18s ease;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .add {

@@ -10,6 +10,8 @@ const props = defineProps<{
   overdueDays?: number;
   /** 是否拖到需要提醒的程度 */
   needsAttention?: boolean;
+  /** 刚添加的那一条 —— 闪一下，让用户确信这次操作生效了 */
+  highlight?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -26,7 +28,7 @@ const repeatLabel = computed(() =>
 </script>
 
 <template>
-  <div class="row" :class="{ done, overdue: isOverdue }">
+  <div class="row" :class="{ done, overdue: isOverdue, flash: highlight }">
     <button
       class="check"
       :class="{ on: done }"
@@ -73,6 +75,25 @@ const repeatLabel = computed(() =>
 
 .row:hover {
   background: rgba(15, 23, 42, 0.04);
+}
+
+/* 刚添加的那条闪一下。
+   只靠"清单里多了一行"太容易被忽略 —— 尤其是清单很长、
+   或者新条目落在折叠区/可视区之外的时候。 */
+.row.flash {
+  animation: row-flash 1.4s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+@keyframes row-flash {
+  0% {
+    background: rgba(59, 110, 246, 0.26);
+  }
+  55% {
+    background: rgba(59, 110, 246, 0.14);
+  }
+  100% {
+    background: transparent;
+  }
 }
 
 /* ── 勾选框 ── */

@@ -31,6 +31,35 @@ const todos = ref<Todo[]>([]);
 const ready = ref(false);
 const fatalError = ref<string | null>(null);
 
+/**
+ * "数据存不下来"的警告。
+ *
+ * 独立于 fatalError：致命错误是"用不了"，这个警告是"能用但会丢"。
+ * 后者更危险 —— 用户会以为已经存好了，所以必须一直显眼地摆在那里。
+ */
+const storageWarning = ref<string | null>(null);
+
+/** 启动阶段的可读描述。卡住时能一眼看出停在哪一步（诊断用，也便于用户报障） */
+const loadPhase = ref("启动中");
+
+export function reportPhase(phase: string): void {
+  loadPhase.value = phase;
+}
+
+/**
+ * 最近一次写操作的失败原因。
+ *
+ * 存在的理由：写库失败如果没人接，就只是浏览器控制台里一条没人看的报错，
+ * 界面上表现为"点了回车没有任何反应"。有了它，失败必须变成看得见的一句话。
+ */
+const lastError = ref<string | null>(null);
+
+/** 一闪而过的成功提示（"已添加「写周报」"） */
+const notice = ref<string | null>(null);
+
+/** 刚添加的那条的 id —— 让它在清单里闪一下，眼睛才抓得住 */
+const justAddedId = ref<string | null>(null);
+
 /** 当前时刻。tick 它 = 驱动"业务日"翻天，是逾期顺延的唯一动力 */
 const now = ref(new Date());
 
@@ -40,7 +69,14 @@ const service = shallowRef<TodoService | null>(null);
 
 /** 每 30 秒更新一次 now。跨过凌晨 4 点时清单会自动翻天 */
 const CLOCK_TICK_MS = 30_000;
-let clockTimer: number | null = null;
+/** 成功提示停留多久 */
+const NOTICE_MS = 2600;
+/** 新条目高亮多久 */
+const HIGHLIGHT_MS = 1400;
+
+let clockTimer: ReturnType<typeof setInterval> | null = null;
+let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 
 // ─────────────────────────────────────────────────────────────
 // 派生：四个视角
@@ -74,22 +110,63 @@ const visibleDateKey = computed<DateKey>(() =>
 // 初始化
 // ─────────────────────────────────────────────────────────────
 
+/** 读取待办最多等多久。超过就报错，绝不让界面停在"正在读取…"转圈 */
+const LOAD_TIMEOUT_MS = 10_000;
+
 export async function initTodoStore(repo: TodoRepository) {
   service.value = new TodoService(repo);
+  reportPhase("正在读取待办…");
   try {
-    todos.value = await service.value.list();
+    const loaded = await Promise.race([
+      service.value.list(),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`读取待办超时（超过 ${LOAD_TIMEOUT_MS / 1000} 秒没有响应）`)),
+          LOAD_TIMEOUT_MS,
+        ),
+      ),
+    ]);
+    reportPhase(`E race 返回 ${loaded.length} 条`);
+    todos.value = loaded;
+    reportPhase("F 已写入内存副本");
   } catch (err) {
-    fatalError.value = err instanceof Error ? err.message : String(err);
+    fatalError.value = describe(err);
     console.error("[快办] 读取待办失败", err);
   } finally {
+    // 无论成功失败都必须"就绪"：否则列表区会永远停在加载态，
+    // 用户刚添加的东西也就永远显示不出来。
     ready.value = true;
+    reportPhase(fatalError.value ? "读取失败" : "已就绪");
   }
 
   if (clockTimer === null) {
-    clockTimer = window.setInterval(() => {
+    clockTimer = setInterval(() => {
       now.value = new Date();
     }, CLOCK_TICK_MS);
   }
+}
+
+/**
+ * 启动流程整体失败时由 main.ts 调用。
+ *
+ * 存在的意义就是**让失败可见**：以前 main.ts 的 catch 只写 console.error，
+ * 于是"数据库打不开"在界面上完全看不出来 —— 停在"正在读取…"，
+ * 用户添加的东西写不进库（或写进去了但读不出来），且没有任何提示。
+ */
+export function reportFatal(message: string): void {
+  fatalError.value = message;
+  ready.value = true;
+}
+
+/**
+ * 退化成内存存储时的警告。
+ *
+ * 必须显眼：这意味着**用户这次记的东西关掉软件就没了**。
+ * 静默的临时存储比直接报错更危险 —— 用户会以为已经存好了。
+ */
+export function reportStorageWarning(message: string): void {
+  storageWarning.value = message;
+  console.warn(`[快办] ${message}`);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -102,8 +179,43 @@ function replace(next: Todo) {
 
 function requireService(): TodoService {
   const s = service.value;
-  if (!s) throw new Error("TodoService 尚未初始化");
+  if (!s) throw new Error("待办服务尚未初始化");
   return s;
+}
+
+function describe(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return typeof err === "string" ? err : String(err);
+}
+
+/**
+ * 所有写操作的统一外壳。
+ *
+ * **为什么必须有这层**：写库失败（权限被拒、磁盘满、数据库锁住）如果没人接，
+ * 就变成一个没人处理的 Promise 拒绝 —— 界面上的表现是"点了回车没有任何反应"。
+ * 用户会以为记下了，其实什么都没发生。这是本产品最不可接受的失败模式，
+ * 所以每一次写操作都必须能变成界面上看得见的一句话。
+ */
+async function write(what: string, op: () => Promise<void>): Promise<boolean> {
+  try {
+    await op();
+    lastError.value = null;
+    return true;
+  } catch (err) {
+    lastError.value = `${what}失败：${describe(err)}`;
+    console.error(`[快办] ${lastError.value}`, err);
+    return false;
+  }
+}
+
+/** 一闪而过的成功提示（"已添加「写周报」"），让用户确信这一次操作生效了 */
+export function flashNotice(text: string): void {
+  notice.value = text;
+  if (noticeTimer !== null) clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => {
+    notice.value = null;
+    noticeTimer = null;
+  }, NOTICE_MS);
 }
 
 export interface AddOptions {
@@ -112,33 +224,63 @@ export interface AddOptions {
   time?: TimeOfDay | null;
 }
 
-export async function addTodo({ title, date, time = null }: AddOptions): Promise<void> {
-  const todo = await requireService().add({ title, date, time });
-  todos.value = [...todos.value, todo];
+/** 新增。返回是否成功（失败原因在 `lastError` 里） */
+export async function addTodo({ title, date, time = null }: AddOptions): Promise<boolean> {
+  let created: Todo | null = null;
+  const ok = await write("添加待办", async () => {
+    created = await requireService().add({ title, date, time });
+  });
+  if (ok && created) {
+    todos.value = [...todos.value, created];
+    // 记下"刚加的是哪条"，让它在清单里闪一下 —— 只靠"多了一行"太容易被忽略
+    justAddedId.value = (created as Todo).id;
+    if (highlightTimer !== null) clearTimeout(highlightTimer);
+    highlightTimer = setTimeout(() => {
+      justAddedId.value = null;
+      highlightTimer = null;
+    }, HIGHLIGHT_MS);
+  }
+  return ok;
 }
 
 /** 勾选 / 取消勾选当前这一天的这一次 */
-export async function toggleDone(todo: Todo, dateKey: DateKey): Promise<void> {
+export async function toggleDone(todo: Todo, dateKey: DateKey): Promise<boolean> {
   const done = isOccurrenceDone(todo, dateKey);
-  replace(await requireService().setDone(todo, dateKey, !done));
+  return write(done ? "取消完成" : "标记完成", async () => {
+    replace(await requireService().setDone(todo, dateKey, !done));
+  });
 }
 
 /** 移到某一天（逾期区的一键"搬到今天"用的就是它） */
-export async function moveTodoTo(todo: Todo, dateKey: DateKey | null): Promise<void> {
-  replace(await requireService().moveTo(todo, dateKey));
+export async function moveTodoTo(todo: Todo, dateKey: DateKey | null): Promise<boolean> {
+  return write("改期", async () => {
+    replace(await requireService().moveTo(todo, dateKey));
+  });
 }
 
 /** 删除（软删除，数据还在库里，只是不再出现） */
-export async function removeTodo(todo: Todo): Promise<void> {
-  replace(await requireService().remove(todo));
+export async function removeTodo(todo: Todo): Promise<boolean> {
+  return write("删除", async () => {
+    replace(await requireService().remove(todo));
+  });
 }
 
-/** 勾选"今天都没做完"的昨日事项：批量搬到今天 */
-export async function carryOverAll(): Promise<void> {
+/** 批量把昨日未完成搬到今天 */
+export async function carryOverAll(): Promise<boolean> {
   const targets = view.value.overdue.map((o) => o.todo);
-  for (const todo of targets) {
-    replace(await requireService().moveTo(todo, view.value.businessDate));
-  }
+  if (targets.length === 0) return true;
+
+  return write("批量改期", async () => {
+    const svc = requireService();
+    const businessDate = view.value.businessDate;
+    // 逐条改完再一次性合并进内存副本，避免中途失败时界面与库不一致
+    const moved: Todo[] = [];
+    for (const todo of targets) {
+      moved.push(await svc.moveTo(todo, businessDate));
+    }
+    const byId = new Map(moved.map((t) => [t.id, t]));
+    todos.value = todos.value.map((t) => byId.get(t.id) ?? t);
+  });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -151,8 +293,13 @@ export function useTodoStore() {
     todos,
     ready,
     fatalError,
+    storageWarning,
+    loadPhase,
     now,
     activeTab,
+    lastError,
+    notice,
+    justAddedId,
     // 派生
     view,
     remainingCount,
@@ -164,5 +311,6 @@ export function useTodoStore() {
     moveTodoTo,
     removeTodo,
     carryOverAll,
+    flashNotice,
   };
 }
