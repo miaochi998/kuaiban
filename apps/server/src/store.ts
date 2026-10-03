@@ -347,6 +347,26 @@ export class Store {
     return Number(row.n);
   }
 
+  // ───────────────────────────────────────────────────────────
+  // 系统设置
+  // ───────────────────────────────────────────────────────────
+
+  getSetting(key: string): string | null {
+    const row = this.db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as
+      | { value: string }
+      | undefined;
+    return row?.value ?? null;
+  }
+
+  setSetting(key: string, value: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      )
+      .run(key, value, nowIso());
+  }
+
   /** 删掉一个用户及其全部数据（离职清理用） */
   deleteUser(userId: string): void {
     this.db.prepare("DELETE FROM sync_records WHERE user_id = ?").run(userId);

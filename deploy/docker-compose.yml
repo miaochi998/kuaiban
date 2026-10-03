@@ -33,6 +33,10 @@ services:
       # 账号建好之后就改掉或删掉这个变量（密码存在数据库里）。
       KUAIBAN_ADMIN_PASSWORD: "${KUAIBAN_ADMIN_PASSWORD}"
 
+      # 当前版本号：界面上"当前版本 x.y.z"读的就是它。
+      # 升级时由后台改 KUAIBAN_IMAGE，这里同步改一下即可。
+      KUAIBAN_VERSION: "${KUAIBAN_VERSION:-0.1.1}"
+
       KUAIBAN_DB: /data/kuaiban.db
       KUAIBAN_RELEASES_DIR: /data/releases
       PORT: "6520"

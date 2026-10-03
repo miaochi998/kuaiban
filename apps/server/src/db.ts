@@ -42,6 +42,15 @@ CREATE TABLE IF NOT EXISTS tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_tokens_user ON tokens(user_id);
 
+-- 系统设置（键值对）。
+-- 升级用的 Portainer 地址、API Key、Stack 名、镜像名都存在这里，
+-- **不写死在代码里** —— 换服务器、换 Stack 都不用重新发版。
+CREATE TABLE IF NOT EXISTS settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sync_records (
   user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   id         TEXT NOT NULL,

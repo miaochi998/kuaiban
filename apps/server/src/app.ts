@@ -19,6 +19,14 @@ import { fileURLToPath } from "node:url";
 import type { SyncRequest } from "@kuaiban/core";
 import { passwordProblem } from "./auth.ts";
 import type { ReleaseStore } from "./releases.ts";
+import {
+  applyUpgrade,
+  checkServerUpdate,
+  loadUpgradeConfig,
+  publicUpgradeConfig,
+  saveUpgradeConfig,
+  type UpgradeConfig,
+} from "./upgrade.ts";
 import { Store, StoreError, type ServerUser } from "./store.ts";
 
 /** 登录令牌有效期：30 天。桌面挂件不该天天让用户重新登录 */
@@ -320,6 +328,70 @@ export function createApp({ store, releases, disableRateLimit = false }: AppOpti
           isAdmin: body.isAdmin === true,
         });
         return { user: publicUser(created) };
+      }
+
+      // ─────────────────────────────────────────────────────────
+      // 系统升级
+      //
+      // 只给管理员。Portainer 的 API Key 等同该主机的管理员权限
+      // （CE 版没有细粒度权限），所以配置的读写都必须卡在这一层。
+      // ─────────────────────────────────────────────────────────
+      if (method === "GET" && path === "/api/admin/upgrade") {
+        const config = loadUpgradeConfig(store);
+        return {
+          currentVersion: process.env.KUAIBAN_VERSION ?? "未知",
+          config: publicUpgradeConfig(config),
+        };
+      }
+
+      if (method === "POST" && path === "/api/admin/upgrade/config") {
+        const incoming = body.config as UpgradeConfig | undefined;
+        if (!incoming || !Array.isArray(incoming.envs)) {
+          throw new HttpError(400, "配置格式不对");
+        }
+
+        // 空字符串表示"这一项不动" —— 页面不会回显 Key，所以留空不能被当成"
+        // 用户想清空"，否则每次保存设置都会把 Key 抹掉。
+        const previous = loadUpgradeConfig(store);
+        const merged: UpgradeConfig = {
+          githubRepo: incoming.githubRepo ?? previous.githubRepo,
+          githubToken: incoming.githubToken || previous.githubToken,
+          envs: previous.envs.map((slot) => {
+            const next = incoming.envs.find((e) => e.key === slot.key);
+            if (!next) return slot;
+            return {
+              ...slot,
+              ...next,
+              apiKey: next.apiKey || slot.apiKey,
+            };
+          }),
+        };
+        saveUpgradeConfig(store, merged);
+        return { config: publicUpgradeConfig(merged) };
+      }
+
+      if (method === "POST" && path === "/api/admin/upgrade/check") {
+        return await checkServerUpdate({
+          config: loadUpgradeConfig(store),
+          currentVersion: process.env.KUAIBAN_VERSION ?? "未知",
+        });
+      }
+
+      if (method === "POST" && path === "/api/admin/upgrade/apply") {
+        const config = loadUpgradeConfig(store);
+        const target = config.envs.find((e) => e.key === body.env);
+        if (!target) throw new HttpError(400, "没有这个环境");
+
+        const version = typeof body.version === "string" ? body.version : "";
+        if (!/^\d+\.\d+\.\d+$/.test(version)) throw new HttpError(400, "版本号格式不对");
+
+        return await applyUpgrade({
+          env: target,
+          version,
+          imageName: typeof body.imageName === "string" && body.imageName
+            ? body.imageName
+            : process.env.KUAIBAN_IMAGE_NAME ?? "miaochi/kuaiban-server",
+        });
       }
 
       const userPath = /^\/api\/admin\/users\/([^/]+)\/(password|disabled)$/.exec(path);

@@ -85,6 +85,9 @@
     line-height: 1.7;
   }
   .hidden { display: none; }
+  select { padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; font: inherit; background: #fbfcfd; width: 100%; }
+  .envbox { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+  .envbox h3 { margin: 0 0 8px; font-size: 13px; }
   .muted { color: var(--dim); font-size: 12px; }
 </style>
 </head>
@@ -135,6 +138,50 @@
       <p id="listMsg" class="msg"></p>
     </div>
 
+    <!-- ── 系统升级 ── -->
+    <div class="card">
+      <h2>系统升级</h2>
+
+      <div class="row" style="align-items:center">
+        <span id="verLine" class="muted">当前版本 ——</span>
+        <button class="ghost" id="check" style="flex:0 0 auto">检查更新</button>
+      </div>
+
+      <div class="row" style="margin-top:12px">
+        <div>
+          <label>要升级哪个环境</label>
+          <select id="envPick"></select>
+        </div>
+        <button id="apply" style="flex:0 0 auto">开始升级</button>
+      </div>
+
+      <p class="muted" style="margin-top:10px">
+        升级会重建容器。数据存在宿主机的 /opt/kuaiban/data，<b>不会丢</b>。<br>
+        建议流程：<b>先升「测试」，验证没问题再升「正式」</b>。
+      </p>
+      <p id="upMsg" class="msg"></p>
+
+      <details style="margin-top:12px">
+        <summary style="cursor:pointer;color:#7c8798;font-size:13px">Portainer 连接设置</summary>
+
+        <div class="row" style="margin-top:12px">
+          <div><label>GitHub 仓库（owner/repo）</label><input id="cfgRepo" placeholder="miaochi998/kuaiban" /></div>
+          <div><label>GitHub 只读 Token</label><input id="cfgToken" type="password" placeholder="留空 = 不改" /></div>
+        </div>
+
+        <div id="envForms"></div>
+
+        <div class="row" style="margin-top:12px">
+          <div><label>镜像名</label><input id="cfgImage" placeholder="miaochi/kuaiban-server" /></div>
+          <button id="saveCfg" style="flex:0 0 auto">保存设置</button>
+        </div>
+        <p class="muted" style="margin-top:8px">
+          Portainer API Key 存在服务器数据库里，<b>不会回显到浏览器</b>；
+          留空表示不改动。
+        </p>
+      </details>
+    </div>
+
     <div class="card">
       <div class="row">
         <span class="muted" id="me"></span>
@@ -183,6 +230,7 @@ async function login() {
     $("main").classList.remove("hidden");
     $("me").textContent = data.user.displayName + "（" + data.user.username + "）";
     await refresh();
+    await loadUpgrade().catch((err) => say("upMsg", err.message, "err"));
   } catch (err) {
     say("loginMsg", err.message, "err");
   } finally {
@@ -272,6 +320,123 @@ async function create() {
     say("createMsg", err.message, "err");
   }
 }
+
+// ── 系统升级 ──
+
+let upgradeCfg = null;
+const IMAGE_KEY = "KUAIBAN_IMAGE_STORE"; // 存镜像名，避免每次都要重填
+
+async function loadUpgrade() {
+  const data = await api("/api/admin/upgrade");
+  upgradeCfg = data.config;
+  $("verLine").textContent = "当前版本 " + data.currentVersion;
+  $("cfgRepo").value = upgradeCfg.githubRepo || "";
+  $("cfgImage").value = localStorage.getItem(IMAGE_KEY) || "";
+
+  // 环境下拉
+  const pick = $("envPick");
+  pick.innerHTML = "";
+  for (const e of upgradeCfg.envs) {
+    const opt = document.createElement("option");
+    opt.value = e.key;
+    opt.textContent = e.label + "（" + (e.portainerUrl || "未配置") + "）";
+    pick.appendChild(opt);
+  }
+
+  // 每个环境的表单
+  const box = $("envForms");
+  box.innerHTML = "";
+  for (const e of upgradeCfg.envs) {
+    const wrap = document.createElement("div");
+    wrap.className = "envbox";
+    wrap.innerHTML =
+      "<h3>" + e.label + "　" + (e.hasApiKey ? "🔑 已配置 Key" : "⚠️ 还没配 Key") + "</h3>" +
+      '<div class="row">' +
+      '<div><label>Portainer 地址</label><input data-k="portainerUrl" data-e="' + e.key + '" value="' + (e.portainerUrl || "") + '" /></div>' +
+      '<div><label>API Key（留空=不改）</label><input type="password" data-k="apiKey" data-e="' + e.key + '" placeholder="' + (e.hasApiKey ? "已配置" : "未配置") + '" /></div>' +
+      "</div>" +
+      '<div class="row" style="margin-top:8px">' +
+      '<div><label>Stack 名称或 ID</label><input data-k="stackId" data-e="' + e.key + '" value="' + (e.stackId || "") + '" /></div>' +
+      '<div><label>Endpoint ID</label><input data-k="endpointId" data-e="' + e.key + '" value="' + (e.endpointId || "") + '" /></div>' +
+      "</div>";
+    box.appendChild(wrap);
+  }
+}
+
+async function saveUpgrade() {
+  const cfg = {
+    githubRepo: $("cfgRepo").value.trim(),
+    githubToken: $("cfgToken").value,
+    envs: upgradeCfg.envs.map((e) => {
+      const get = (k) => {
+        const el = document.querySelector('[data-e="' + e.key + '"][data-k="' + k + '"]');
+        return el ? el.value.trim() : "";
+      };
+      return {
+        key: e.key,
+        label: e.label,
+        portainerUrl: get("portainerUrl"),
+        apiKey: get("apiKey"),
+        stackId: get("stackId"),
+        endpointId: get("endpointId"),
+        imageVar: e.imageVar,
+      };
+    }),
+  };
+  localStorage.setItem(IMAGE_KEY, $("cfgImage").value.trim());
+  try {
+    await api("/api/admin/upgrade/config", { config: cfg });
+    say("upMsg", "设置已保存", "ok");
+    $("cfgToken").value = "";
+    await loadUpgrade();
+  } catch (err) {
+    say("upMsg", err.message, "err");
+  }
+}
+
+async function checkUpdate() {
+  say("upMsg", "");
+  $("check").disabled = true;
+  try {
+    const r = await api("/api/admin/upgrade/check", {});
+    $("verLine").textContent = "当前版本 " + r.current;
+    if (r.error) say("upMsg", r.error, "err");
+    else if (r.hasUpdate) say("upMsg", "发现新版本 " + r.latest, "ok");
+    else say("upMsg", "已是最新版本（" + r.current + "）", "ok");
+  } catch (err) {
+    say("upMsg", err.message, "err");
+  } finally {
+    $("check").disabled = false;
+  }
+}
+
+async function applyUpgrade() {
+  const envKey = $("envPick").value;
+  const env = upgradeCfg.envs.find((e) => e.key === envKey);
+  const version = prompt("要升级到哪个版本？（例如 0.1.2）");
+  if (!version) return;
+
+  if (!confirm("升级「" + env.label + "」到 " + version + "？\n容器会重建，数据不会丢。")) return;
+
+  say("upMsg", "正在通知 Portainer…");
+  $("apply").disabled = true;
+  try {
+    const r = await api("/api/admin/upgrade/apply", {
+      env: envKey,
+      version: version.trim(),
+      imageName: $("cfgImage").value.trim(),
+    });
+    say("upMsg", r.message, r.ok ? "ok" : "err");
+  } catch (err) {
+    say("upMsg", err.message, "err");
+  } finally {
+    $("apply").disabled = false;
+  }
+}
+
+$("check").onclick = checkUpdate;
+$("apply").onclick = applyUpgrade;
+$("saveCfg").onclick = saveUpgrade;
 
 $("go").onclick = login;
 $("create").onclick = create;

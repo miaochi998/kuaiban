@@ -401,6 +401,47 @@ e2e 新增 6 个日历用例（原"日历不该能加"的用例已改写），�
 【用户给的运维前置约束（已写入提示词）】数据目录 `/opt/kuaiban/data`（数据库+发布包+签名私钥同处，一次备份全带走）；6520 仅内网放行、公网入口一律走阿里云 NPM；NPM 需加 `client_max_body_size 200m;`（安装包 3–6MB）；域名 A 记录指向阿里云那台（不是办公室 IP）。
 
 【下一步（尚未开始）】**服务端从管理后台在线升级**（调 Portainer API 改镜像 tag + pullImage 重建 Stack）——用户已知此项待做并询问是否现在开始。全仓 558 个测试。
+- [2026-10-04 03:07] [工作记录] 运维资料检查与 GitHub API 通道修复（10db735） — commit 10db735。运维 AI 回传资料已检查（文件 `docs/部署-运维资料回传.md`，**已加入 .gitignore**，因其可能含凭据）。
+
+【运维实测的关键事实（推测不出来，必须记住）】**目标服务器上 `github.com` 不可达（超时），但 `api.github.com` 返回 200、`objects.githubusercontent.com` 可达。** 因此 GitHub Release 资源的 `browser_download_url`（`github.com/.../releases/download/...` 直链）**必然超时**。**正确做法：走 API 通道** `GET https://api.github.com/repos/<owner>/<repo>/releases/assets/<id>` + 请求头 `Accept: application/octet-stream`（不加这个头返回的是 JSON 元数据而非文件本体）。运维已实测用此法成功下载 1.96MB 资源。代码已据此修改：`GithubAsset` 记录 `apiUrl`（`browserUrl` 仅供本地/境外），回源与签名下载均带该头。**结论："不配 GitHub、改用本地清单"的方案不需要——API 通道能走通，全自动发版得以保住。**
+
+【我上一版文档的错误（已修）】防火墙写成"仅限内网来源"是错的——**阿里云 NPM 回源时源 IP 是公网 IP**，按字面做外网会访问不了。正确规则：放行 6522/tcp，来源限 `192.168.2.0/24` + `47.105.64.102`。
+
+【服务器环境（已确认）】装有 Portainer 的是**仓库网段**两台：生产 `192.168.2.10`、测试 `192.168.2.6`（运维机 `192.168.2.99`）；**办公室网段 `192.168.3.0/24` 里没有任何服务器**（我原文档假设的"办公室服务器"不存在）。Debian 13 / Docker 26.1.5 / Portainer 2.27.6，Endpoint ID = **1**。磁盘：测试机 918G、生产机 853G。**6520、6521 已被 BNOA 占用 → 改用 6522**（映射 `6522:6520`，容器内仍监听 6520，镜像与 compose 不用改）。路由器：外网 `16522` → 内网 `6522`，DDNS `ddns.bonnei.com`（动态，NPM 回源请用域名不要写死 IP）。`kuaiban.bonnei.com` 已解析到 `47.105.64.102`（阿里云 NPM）。部署方式选 A（预构建镜像 + Docker Hub，公开仓库 `miaochi/kuaiban-server`）。运维规范：**先测试机 .6、再生产机 .10**；`/opt` 默认不在备份范围，已获授权纳入。
+
+【安全事件】**运维回传文档里贴了一个 Docker Hub Access Token（Read/Write/Delete、永不过期）**。已从文件抹除、确认全仓库无该字样、并把该文件加入 .gitignore；**已提醒用户立即去 Docker Hub 作废重建**。教训：要求对方回传资料时，必须**显式列出"不要回传凭据"**——我在提示词里写了这条，但仍被违反，说明还需要在收到后立即做凭据扫描。
+
+【对运维 6 问的答复】**签名私钥不上服务器**：签名在 GitHub Actions 里用 Secret 完成，服务器只分发已签名的产物，`/opt/kuaiban/data` 里**不放私钥**（只有数据库与缓存安装包）；私钥只存两处：GitHub Secret + 一份**离线副本**（GitHub 账号若出问题，私钥丢失将导致已发版客户端无法验证新版本）。安装包**不需要运维提供 SMB/SSH 落点**（服务器自行回源）。管理员密码由我方生成后自行填入 Portainer 环境变量，运维不参与。
+
+【仍缺 / 下一步】1) **GitHub 仓库地址 `owner/repo`**（私有则需只读 token）；2) **Portainer 访问地址**（如 `http://192.168.2.10:9000`，**不要经聊天传递**，等后台设置页做好后由管理员自行录入）。**待开发：服务端从管理后台在线升级（调 Portainer API 改镜像 tag + pullImage 重建 Stack）**。全仓 558 个测试。
+- [2026-10-04 03:24] [工作记录] Secrets 已代设 + 只读 Token 配置纠正 + 测试机仅 IP 访问 — 本轮无代码改动，但确认了几项可直接复用的环境事实与已完成的操作。
+
+【本机 gh CLI 可用且已登录（重要能力，以后多用）】`gh` 2.83.1 已安装在 `/opt/homebrew/bin/gh`，以 **miaochi998** 登录（keyring 存储，scopes 含 `repo`、`workflow`）。因此**我可以直接代用户操作 GitHub**：设置仓库 Secrets、查看/重跑 CI、改仓库设置、看 Release 等，不需要用户手动点。本轮已用它办成一件实事（见下）。
+
+【已完成：GitHub Secrets 已设置】**`miaochi998/kuaiban` 仓库的两个 Secret 已用 `gh secret set` 设好**（私钥内容直接从文件读取管道输入，未经过聊天）：
+- `TAURI_SIGNING_PRIVATE_KEY` = 本机私钥文件全部内容
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` = 空
+用户无需再操作。命令形式：`gh secret set <名称> --repo miaochi998/kuaiban < <私钥文件路径>`。
+
+【仓库事实】`miaochi998/kuaiban`：**PRIVATE**，默认分支 `main`。
+
+【用户决定的部署形态（已确认，取代我此前的域名方案顾虑）】**测试服务器只用 IP 访问、不做端口映射、不需要测试域名**（理由：只是测试）。因此**路由器映射直接指向正式机 `.10:6522`**，测试机 `192.168.2.6:6522` 仅局域网可达。→ 我此前担心的"测试期间正式环境断掉"不存在了，`kuaiban-test.bonnei.com` 方案作废（用户未采纳，也不需要）。
+
+【GitHub 只读 Token 的正确配置（用户截图里选错了，已纠正）】用户在截图里选了 **Public repositories** —— **这对私有仓库无效**，服务器会读不到 Release。正确配置：**Repository access 选 `Only select repositories` → 勾选 `miaochi998/kuaiban`**；**Permissions 只加 `Contents: Read-only`**。Expiration 选 No expiration（只读+单仓库前提下可接受）。**该 token 用户尚未提供——这是当前唯一的阻塞项。**
+
+【用户决定：Docker Hub Token 沿用已泄露的那一个，不作废】已按用户意愿停止劝说，仅守两条：**绝不写进仓库**（已抹除内容 + 已加入 `.gitignore`）、需要时从本机环境变量读取，不硬编码。
+
+【下一步】拿到 GitHub 只读 token 后，配置 `KUAIBAN_GITHUB_REPO=miaochi998/kuaiban` + `KUAIBAN_GITHUB_TOKEN=<只读 token>`，整套"打 tag → CI 构建 → 下载页与自动更新自动跟上"即可跑通；之后开发管理后台「系统升级」页（双 Portainer 环境）。全仓 558 个测试。
+- [2026-10-04 03:28] [工作记录] GitHub 只读 Token 验证通过并落地配置，仅剩「系统升级」页 — 用户已提供 **GitHub 只读 fine-grained token**（`github_pat_...`），并已实测三项验证全部通过：读仓库 `200` ✅、读 Release `404`（尚无 Release，正常）✅、**尝试写入返回 `403`（只读生效，配置正确）**✅。
+
+【配置已落地】写入 `apps/server/.env.local`（`chmod 600`，已确认被 `.gitignore` 覆盖、`git check-ignore` 通过、不进仓库）。内容为 `KUAIBAN_GITHUB_REPO=miaochi998/kuaiban`、`KUAIBAN_GITHUB_TOKEN=<token>`、`KUAIBAN_PUBLIC_ORIGIN=https://kuaiban.bonnei.com`。**正式部署时这些值填在 Portainer 的 Stack 环境变量里，不放文件。**
+（令牌明文见用户消息，此处不重复保存；如未来需要，从 `apps/server/.env.local` 读取。）
+
+【Portainer Stack 需填的环境变量（已交付用户）】`KUAIBAN_IMAGE`、`KUAIBAN_PORT=6522`、`KUAIBAN_ADMIN_PASSWORD`（敏感，用户自拟）、`KUAIBAN_PUBLIC_ORIGIN=https://kuaiban.bonnei.com`、`KUAIBAN_GITHUB_REPO=miaochi998/kuaiban`、`KUAIBAN_GITHUB_TOKEN`（敏感）。**两个敏感项填在 Portainer 里，不写进 compose 文件。**
+
+【当前进度】已完成：服务端 / 多设备同步 / 管理后台 / 在线更新（客户端自更新）/ 发布下载页 / 客户端自动发版链路（CI workflow + GitHub Secrets 已设 + 只读 token 已验）/ Docker 部署产物（实测通过）/ 运维资料齐全（端口 6522、双 Portainer 环境、DNS 已解析）。**唯一缺口：管理后台「系统升级」页尚未开发**（选环境 测试 .6 / 正式 .10 → 检查更新读 GitHub Release → 调 Portainer API 改镜像 tag + pullImage 重建 Stack；Portainer 地址与 API Key 由管理员在页面上填，不走聊天）。此外「实际上线」需用户操作 Portainer/路由器/NPM。全仓 558 个测试。
+
+【下一步（已向用户提出、等待答复）】开发管理后台「系统升级」页，做完即闭环。
 
 ## 经验教训 Lessons Learned
 
@@ -541,6 +582,28 @@ unsafe { let w = ptr as *mut AnyObject; let _: () = msg_send![w, setAcceptsMouse
 5) 内部工具镜像基础镜像选 `node:24-slim`：`node:sqlite` 内置，**运行时零第三方依赖**，少一类需要审计和升级的东西。
 - [2026-10-04 01:56] [经验教训] 面向国内网络：对外下载地址一律走自有服务器回源，绝不直连境外 — **面对"国内网络环境"的项目，任何给最终用户的下载/更新地址都不能直连 GitHub / 境外服务**。正确做法是：CI 产出到 GitHub Release（构建侧可用境外资源），**服务端作为分发点回源取回并本地缓存**，所有对外 URL 一律用自有域名。判定依据：先确认**服务器**能否访问境外的构建产物源（服务器通常能，员工电脑不能，这是两回事）。
 **另一条同源原则**：凡"分不清就不能发"的场景（如 macOS 芯片架构 aarch64/x64），一律 **返回空而不是默认猜一个** —— 发错架构的安装包会让用户程序直接起不来，比"暂时没得下"严重得多。
+- [2026-10-04 03:07] [经验教训] GitHub API 通道、凭据扫描、反代回源源IP、私钥不上分发服务器 — 1) **国内服务器访问 GitHub：`github.com` 可能不可达，但 `api.github.com` 通常可达。** 因此**不要用 API 返回的 `browser_download_url`**（那是 github.com 直链，会超时），要改用 **API 资源地址** `https://api.github.com/repos/<owner>/<repo>/releases/assets/<id>` 并带请求头 **`Accept: application/octet-stream`**（不加则返回 JSON 元数据而非文件本体）。适用于任何需要从 GitHub Release 取文件的服务端程序。
+2) **让别人回传资料时，除了写"不要回传凭据"，收到后还要立即做一次凭据扫描**（grep 常见前缀如 `dckr_pat_`、`ghp_`、`sk-`）。本轮运维仍把一个 Docker Hub Token 贴进了文档，且该文件在仓库目录内——一旦提交即进 Git 历史难以清除。处理：抹除内容 + 加入 .gitignore + 提醒作废重建。
+3) **"仅限内网来源"这类防火墙描述在反向代理回源场景下是错的**：公网 NPM 回源时源 IP 是**公网 IP**，按字面配置会导致外网访问全挂。正确做法：放行具体端口，来源限`内网网段 + 反代服务器公网 IP`。
+4) **签名私钥不要放到分发服务器上**：签名在 CI 完成即可，服务器只需分发已签名产物。私钥仅存两处——CI Secret + 离线副本。这样既缩小暴露面，也减轻运维的备份负担。
+- [2026-10-04 03:24] [经验教训] 私有仓库 token 必须选 Only select repositories；gh CLI 可代设 Secrets — 1) **配置 GitHub fine-grained token 时，私有仓库必须选 `Only select repositories` 并勾选具体仓库**；选 `Public repositories` 对这种仓库**完全无效**（用户实际踩到了）。权限按最小化给：读 Release 只需 `Contents: Read-only`。
+2) **给 GitHub 仓库设 Secrets 不必让用户手动点**：本机 `gh` CLI 已以仓库所有者登录时，可直接 `gh secret set <名称> --repo <owner/repo> < <文件路径>` 把**私钥等内容从文件管道输入**，全程不经过聊天、不落明文。凡是"需要用户去网页上复制粘贴机密"的步骤，先检查本机 CLI 是否已具备权限代劳。
+3) **在本机检查开发/运维工具链是否已登录**（`gh auth status`、`docker info`、云厂商 CLI 等）往往能省掉大量来回——本轮因此直接替用户完成了 GitHub Secrets 配置。
+- [2026-10-04 03:28] [经验教训] 用三个请求验证 GitHub 只读 token（写入 403 才是对的） — **验证一个 GitHub fine-grained token 是否配得正确，用三个请求就能判断**：① `GET /repos/<owner>/<repo>` 应返回 `200`；② `GET /repos/<owner>/<repo>/releases/latest` 返回 `404` 是正常的（仓库还没有 Release）；③ **`POST /repos/<owner>/<repo>/issues` 应返回 `403`** —— 写入被拒才说明这个 token 真的只有只读权限，是配置正确的正向证据，而不是失败。
+
+## 行动指南 Action Guide
+
+- [2026-10-04 03:15] [行动指南] 部署资料确认与待办清单（GitHub 仓库、双 Portainer 环境、域名方案待定） — 本轮为答疑，无代码改动。确认了两项部署资料，记下以便后续直接使用。
+
+【GitHub 仓库：不需要新建】就是本项目现有仓库 **`miaochi998/kuaiban`**（远程 `git@github.com:miaochi998/kuaiban.git`），**仓库为私有**。因此服务端读 Release 需鉴权：环境变量 `KUAIBAN_GITHUB_REPO=miaochi998/kuaiban` + `KUAIBAN_GITHUB_TOKEN=<只读 fine-grained token（该仓库 Contents: Read-only）>`。私有仓库不影响"服务器回源分发"方案——服务器用 token 走 API 通道取包再分发给员工，员工全程只接触 `kuaiban.bonnei.com`。
+
+【Portainer 两台环境（用户确认）】测试生产 `192.168.2.6:9000`、正式生产 `192.168.2.10:9000`；两台项目基本同步；**部署流程 = 先在测试机部署/升级验证，没问题再升正式机**。两台 Endpoint ID 均为 1；Stack 名建议 `kuaiban-test` / `kuaiban-production`。**「系统升级」页需做成可选环境（两个 Portainer 目标），升级配置（地址/API Key/Stack 名/镜像名）存数据库、由后台页面填写，不写死在代码里。**
+
+【我提出的待用户确认项】**域名方案**：运维描述的是"路由器映射 16522 在 .6/.10 之间切换"，若照此，测试期间正式环境会断、同事用不了。建议改为**两个域名同时在线**：`kuaiban.bonnei.com` → 正式 `.10`（全体员工，永不断）、`kuaiban-test.bonnei.com` → 测试 `.6`（仅开发者验证）。NPM 加一个 Proxy Host 即可，成本近零。**用户尚未答复。**
+
+【仍待用户提供的资料】1) **GitHub 只读 token**（唯一现在就需要给我的——没有它服务器读不到私有仓库 Release，自动发版转不起来）；2) Docker Hub token 需先作废重建（上一个已泄露），新 token 不经聊天传递；3) GitHub Secrets 两项 `TAURI_SIGNING_PRIVATE_KEY`（私钥文件全部内容）与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（留空）——**由用户自行填入 GitHub 仓库设置，不要发给我**；4) 两台 Portainer 的 API Key（**不贴聊天**，等后台「系统升级」页做好后由管理员在页面填写）；5) 确认镜像名 `miaochi/kuaiban-server` 公开是否可行。
+
+【下一步（已向用户提出、等待答复）】开发管理后台「系统升级」页：选环境（测试/正式）→ 检查更新（读 GitHub Release 版本号）→ 一键升级（调对应 Portainer API 改镜像 tag + pullImage 重建 Stack）。全仓 558 个测试。
 
 ## 备注 Notes
 
