@@ -8,6 +8,10 @@
  *   KUAIBAN_PUBLIC_ORIGIN   对外域名（默认 https://kuaiban.bonnei.com）。
  *                           下载地址与更新地址都从它拼出来，换域名不用重新发版。
  *   KUAIBAN_RELEASES_DIR    发布目录（默认 <数据库同级>/releases）
+ *   KUAIBAN_GITHUB_REPO     客户端 Release 所在仓库（owner/repo）。
+ *                           设了它，下载页与更新清单就**自动跟随 GitHub Release**
+ *                           —— 发版只需要打个 tag，没人要手动传文件。
+ *   KUAIBAN_GITHUB_TOKEN    仓库若是私有的，给一个只读 token
  *
  * 首次启动会自动建一个管理员账号。**密码只在首次启动时打印一次**，
  * 之后再也不显示 —— 忘了就用 `node src/reset-admin.ts` 重置。
@@ -54,6 +58,9 @@ const releases = new ReleaseStore({
   dir: releasesDir,
   // 对外域名。**只有这一处** —— 下载页、更新清单都从这里拼
   origin: process.env.KUAIBAN_PUBLIC_ORIGIN ?? "https://kuaiban.bonnei.com",
+  // 设了它，客户端版本就自动跟随 GitHub Release（发版只需打 tag）
+  ...(process.env.KUAIBAN_GITHUB_REPO ? { githubRepo: process.env.KUAIBAN_GITHUB_REPO } : {}),
+  ...(process.env.KUAIBAN_GITHUB_TOKEN ? { githubToken: process.env.KUAIBAN_GITHUB_TOKEN } : {}),
 });
 
 const server = createApp({ store, releases });
@@ -63,6 +70,11 @@ server.listen(port, () => {
   console.log(`[快办服务端] 数据库：${dbPath}`);
   console.log(`[快办服务端] 发布目录：${releases.dir}`);
   console.log(`[快办服务端] 对外域名：${releases.origin}`);
+  console.log(
+    process.env.KUAIBAN_GITHUB_REPO
+      ? `[快办服务端] 客户端版本跟随 GitHub Release：${process.env.KUAIBAN_GITHUB_REPO}`
+      : "[快办服务端] 未配置 KUAIBAN_GITHUB_REPO —— 下载页读本地清单",
+  );
   console.log(`[快办服务端] 下载页：${releases.origin}/  ·  管理后台：${releases.origin}/admin`);
 });
 

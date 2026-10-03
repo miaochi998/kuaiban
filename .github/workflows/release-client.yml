@@ -1,0 +1,139 @@
+# 打一个 tag 就把客户端发出去 —— 之后下载页和自动更新**全自动**跟上
+#
+#     git tag v0.1.2 && git push origin v0.1.2
+#
+# 做三件事：
+#   1. 在 macOS / Windows 上分别打包并**签名**（Tauri 的更新包必须签名）
+#   2. 把安装包、更新包、签名文件传到 GitHub Release
+#   3. 服务端读这个 Release → 下载页与自动更新清单立刻生效
+#
+# 人不需要传任何文件到服务器。这是刻意的：凡是"每次发版都要人记得做一步"
+# 的流程，早晚会漏。
+
+name: 发布客户端
+
+on:
+  push:
+    tags:
+      - "v*"
+  # 也允许手动跑一次（比如 tag 打错了要重发）
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（例如 0.1.2）"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 打包 ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 一个平台失败不影响别的平台 —— 至少能发出一部分，而不是全军覆没
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macOS · Apple 芯片
+            args: "--target aarch64-apple-darwin"
+            rusttarget: aarch64-apple-darwin
+          - os: macos-13
+            label: macOS · Intel
+            args: "--target x86_64-apple-darwin"
+            rusttarget: x86_64-apple-darwin
+          - os: windows-latest
+            label: Windows
+            args: ""
+            rusttarget: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rusttarget }}
+
+      - name: 缓存 Rust 构建
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: 把版本号同步进 tauri.conf.json 与 Cargo.toml
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          else
+            V="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "版本：$V"
+          node -e "
+            const fs=require('fs');
+            const p='apps/desktop/src-tauri/tauri.conf.json';
+            const c=JSON.parse(fs.readFileSync(p,'utf8'));
+            c.version=process.argv[1];
+            fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n');
+          " "$V"
+          # Cargo.toml 里的 version 也要跟着，否则包名和实际版本会对不上
+          sed -i.bak "0,/^version = /s//version = \"$V\"/" apps/desktop/src-tauri/Cargo.toml
+
+      - name: 打包（含签名）
+        env:
+          # ⚠️ 这两个是 GitHub 仓库 Secrets。私钥**绝不能**进代码库：
+          # 有它就能签出装到全公司机器上的程序。
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # 同步服务器地址烧进安装包（用户不需要、也没法填）
+          VITE_KUAIBAN_SERVER: https://kuaiban.bonnei.com
+        run: pnpm --filter @kuaiban/desktop tauri build ${{ matrix.args }}
+
+      - name: 收集产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.label }}
+          # 安装包（给人下）+ 更新包与签名（给自动更新用）
+          path: |
+            apps/desktop/src-tauri/target/**/release/bundle/**/*.dmg
+            apps/desktop/src-tauri/target/**/release/bundle/**/*.exe
+            apps/desktop/src-tauri/target/**/release/bundle/**/*.msi
+            apps/desktop/src-tauri/target/**/release/bundle/**/*.app.tar.gz
+            apps/desktop/src-tauri/target/**/release/bundle/**/*.nsis.zip
+            apps/desktop/src-tauri/target/**/release/bundle/**/*.sig
+          if-no-files-found: error
+
+  release:
+    name: 发 Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 列出要发的文件（出问题时一眼看得出缺了什么）
+        run: ls -la artifacts
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**
+          generate_release_notes: true
+          # 手动触发时 tag 可能还不存在
+          tag_name: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
+          draft: false
+          prerelease: false

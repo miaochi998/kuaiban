@@ -8,7 +8,7 @@
         ▼
    阿里云服务器 · NPM (Nginx Proxy Manager)
         │  终止 HTTPS，反代到 ↓
-        │  http://<办公室动态域名>:8787
+        │  http://<办公室动态域名>:6520
         ▼
    办公室路由器（端口映射；运营商封 80/443，所以用非标端口）
         ▼
@@ -50,7 +50,7 @@ Stacks → **Add stack** → 名称 `kuaiban` → 粘贴 `docker-compose.yml` �
 | 变量 | 说明 |
 |---|---|
 | `KUAIBAN_IMAGE` | 上面构建/推送的镜像地址 |
-| `KUAIBAN_PORT` | 局域网监听端口，默认 `8787`（要和路由器端口映射一致） |
+| `KUAIBAN_PORT` | 局域网监听端口，默认 `6520`（要和路由器端口映射一致） |
 | `KUAIBAN_ADMIN_PASSWORD` | 管理员初始密码，**至少 8 位**。只在第一次启动建号时用 |
 
 先把数据目录建好：
@@ -64,22 +64,22 @@ sudo mkdir -p /opt/kuaiban/data/releases
 ## 三、看一眼装好了没
 
 ```bash
-curl http://127.0.0.1:8787/api/health
+curl http://127.0.0.1:6520/api/health
 # → {"ok":true}
 ```
 
-浏览器打开 `http://<服务器局域网IP>:8787/` 应该看到**发布下载页**，
-`http://<服务器局域网IP>:8787/admin` 是管理后台。
+浏览器打开 `http://<服务器局域网IP>:6520/` 应该看到**发布下载页**，
+`http://<服务器局域网IP>:6520/admin` 是管理后台。
 
 ## 四、路由器 + 阿里云 NPM
 
-1. **路由器**：把外网某个端口（例如 `18787`）映射到 `办公室服务器IP:8787`
+1. **路由器**：把外网某个端口（例如 `16520`）映射到 `办公室服务器IP:6520`
 2. **动态域名**：路由器自带 DDNS，得到一个形如 `xxx.f3322.net` 的域名
 3. **阿里云 NPM**：新增 Proxy Host
    - Domain Names：`kuaiban.bonnei.com`
    - Scheme：`http`
    - Forward Hostname：`xxx.f3322.net`（或直接填办公室公网 IP）
-   - Forward Port：`18787`
+   - Forward Port：`16520`
    - 勾上 **Block Common Exploits**、**Websockets Support**
    - SSL 页：申请 Let's Encrypt 证书，勾 **Force SSL**
 4. **域名解析**：`kuaiban.bonnei.com` 的 A 记录指向**阿里云那台服务器的公网 IP**

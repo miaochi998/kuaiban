@@ -207,6 +207,7 @@ export function createApp({ store, releases, disableRateLimit = false }: AppOpti
     // 没有发布目录时也返回结构完整的空清单：页面要能优雅地显示"即将推出"，
     // 而不是转圈或者报错。
     if (method === "GET" && path === "/api/releases") {
+      await releases?.refresh();
       return (
         releases?.publicListing() ?? {
           version: null,

@@ -6,7 +6,7 @@
 #
 #   员工 → https://kuaiban.bonnei.com (443)
 #          └→ 阿里云 NPM（终止 HTTPS）
-#             └→ http://<动态域名>:8787   ← 路由器端口映射到本机 8787
+#             └→ http://<动态域名>:6520   ← 路由器端口映射到本机 8787
 #                └→ 本堆栈
 #
 # 所以这里**只需要监听一个普通端口**，HTTPS 由阿里云那台 NPM 负责。
@@ -22,7 +22,7 @@ services:
     # 只在局域网暴露。**不要**直接映射到公网 —— 公网入口统一走阿里云的 NPM，
     # 那台机器负责 HTTPS 和证书续期，本机不碰这些。
     ports:
-      - "${KUAIBAN_PORT:-8787}:8787"
+      - "${KUAIBAN_PORT:-6520}:6520"
 
     environment:
       # 对外域名：下载页和自动更新清单里的地址都从它拼出来。
@@ -35,7 +35,7 @@ services:
 
       KUAIBAN_DB: /data/kuaiban.db
       KUAIBAN_RELEASES_DIR: /data/releases
-      PORT: "8787"
+      PORT: "6520"
 
     volumes:
       # ⚠️ 用**宿主机目录**而不是 Docker 命名卷，是刻意的：

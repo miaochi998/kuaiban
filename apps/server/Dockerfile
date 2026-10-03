@@ -30,14 +30,14 @@ COPY apps/server apps/server
 # 由 compose 挂到宿主机，容器重建不会丢
 ENV KUAIBAN_DB=/data/kuaiban.db \
     KUAIBAN_RELEASES_DIR=/data/releases \
-    PORT=8787 \
+    PORT=6520 \
     NODE_ENV=production
 
 VOLUME ["/data"]
-EXPOSE 8787
+EXPOSE 6520
 
 # 健康检查：让 Portainer / Docker 能看出容器是不是真的还能干活
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:8787/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:6520/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["node", "--experimental-sqlite", "apps/server/src/main.ts"]
