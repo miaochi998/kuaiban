@@ -2,6 +2,17 @@
 #
 # 在 Portainer 里：Stacks → Add stack → 粘贴本文件内容（或指向本仓库的路径）。
 #
+# ## 运维的硬性要求（必须遵守）
+#
+# 1. **只能用 Portainer 的 Stack 方式部署**，不能用 docker run 或脱离面板的裸 compose
+# 2. 部署后必须能在面板里**看到、启停、重建（re-pull & redeploy）、改环境变量**
+#    —— 本文件把镜像、端口、域名等都做成 `${...}` 变量，正是为了这一点：
+#       镜像换版本、端口调整都在面板上改，不用改文件
+# 3. **Stack 名称固定**：测试机 `kuaiban-test`（192.168.2.6）/ 生产机 `kuaiban-production`（192.168.2.10）
+# 4. **部署后不要改容器名 / 项目名**（运维有因改名导致卷重建、丢数据的前例）
+# 5. 数据用**宿主机目录** `/opt/kuaiban/data`（不是命名卷）——
+#    这样即使改名也不会丢数据。这个设计要保持。
+#
 # ## 这个堆栈在整条链路里的位置
 #
 #   员工 → https://kuaiban.bonnei.com (443)
@@ -17,7 +28,10 @@ services:
     # 改成你自己的仓库地址，例如：
     #   image: registry.cn-hangzhou.aliyuncs.com/你的命名空间/kuaiban-server:0.1.1
     image: ${KUAIBAN_IMAGE:-kuaiban-server:latest}
-    container_name: kuaiban
+    # 刻意**不写死 container_name**：让 Compose 按 Stack 名派生
+    # （kuaiban-test-kuaiban-1 / kuaiban-production-kuaiban-1），
+    # 在面板里一眼看得出容器属于哪个 Stack，也更贴近运维既有的命名风格。
+    # 反正数据在宿主机目录里，改名也不会丢。
 
     # 只在局域网暴露。**不要**直接映射到公网 —— 公网入口统一走阿里云的 NPM，
     # 那台机器负责 HTTPS 和证书续期，本机不碰这些。

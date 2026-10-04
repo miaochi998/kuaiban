@@ -21,6 +21,22 @@
 HTTPS、证书、域名解析全在阿里云那台 NPM 上 —— 一条链路只有一个地方管证书，
 少一个出错的地方。
 
+## 〇、运维的硬性要求（先看这条）
+
+| 要求 | 本方案怎么满足 |
+|---|---|
+| 只能用 Portainer 的 **Stack** 方式部署 | `deploy/docker-compose.yml` 就是标准 Compose 文件 |
+| 面板里能**看到 / 启停 / 重建 / 改环境变量** | 镜像、端口、域名等全部做成 `${...}` 变量，在面板上改即可 |
+| Stack 名称固定：`kuaiban-test`（.6）/ `kuaiban-production`（.10） | 已按此命名 |
+| **部署后不要改容器名 / 项目名** | 容器名由 Stack 名派生，不需要也不应该改名 |
+| 数据用宿主机目录而非命名卷 | `/opt/kuaiban/data:/data` ✅ |
+
+**已实测确认**：两台 Portainer 的 API Key（描述名 `kuaiban-upgrade`）都有效，
+Endpoint ID 均为 **1**（生产 `prod-local`、测试 `testserver-local`），均在线。
+
+> ⚠️ Portainer CE 版**没有细粒度权限**，这个 Key 等同该主机管理员、能操作上面全部 Stack。
+> 所以它只填在快办管理后台的「Portainer 连接设置」里，**不进 compose、不进代码仓库**。
+
 ## 一、构建镜像
 
 在**有 Docker 的机器**上（办公室服务器自己也行）：
