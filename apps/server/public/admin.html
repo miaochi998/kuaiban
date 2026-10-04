@@ -97,6 +97,7 @@
   .envcard .ver small { font-size: 12px; font-weight: 400; color: #8b94a1; }
   .envcard .meta { margin-top: 6px; font-size: 12px; color: #8b94a1; word-break: break-all; }
   .envcard .do { margin-top: 10px; width: 100%; }
+  .hint { margin-top: 8px; font-size: 11px; line-height: 1.5; color: #8b94a1; }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; }
   .badge.up { background: #fef3c7; color: #92400e; }
   .badge.ok { background: #dcfce7; color: #166534; }
@@ -383,8 +384,16 @@ function renderEnvCards() {
       '<div class="meta">' + (e.portainerUrl || "未配置地址") +
       (e.hasApiKey ? "" : " · 未配 Key") + "</div>" +
       '<button class="ghost do" type="button">' +
-      (hasUpdate ? "升级到 " + upgradeState.latest : "重新拉镜像重建") +
-      "</button>";
+      (hasUpdate ? "升级到 " + upgradeState.latest : "重新部署当前版本") +
+      "</button>" +
+      // 同一个按钮，随状态换名字和说明。
+      // 原来"已是最新"时叫「重新拉镜像重建」—— 技术词，用户看不懂也不敢点，
+      // 只能来问"这是什么、什么时候用"。按钮旁边必须自己把话说清楚。
+      (hasUpdate
+        ? '<div class="hint">把它升到 ' + upgradeState.latest + "（容器会重建，数据不丢）</div>"
+        : '<div class="hint">版本不变，只把容器按当前配置重建一遍。' +
+          "适合：容器状态异常想重启、或想重新拉一次镜像。" +
+          "</div>");
 
     card.onclick = (ev) => {
       // 点卡片本身 = 选中（只是高亮，不影响操作）；点按钮 = 执行
