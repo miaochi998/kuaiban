@@ -146,6 +146,9 @@ export class ReleaseStore {
       updater: await this.updaterFromGithub(release),
     };
 
+    // 先把**不是这个版本的**缓存清掉，再预热。
+    this.dropStaleAssets(release);
+
     // 后台把安装包先拉下来。
     //
     // 不预热的话，**第一个点下载的同事要等服务器从 GitHub 取完**——
@@ -153,6 +156,40 @@ export class ReleaseStore {
     // 预热之后所有人都是本地直读（毫秒级）。
     // 刻意不 await：不阻塞这次请求，失败了下次刷新再试。
     void this.warmCache(release);
+  }
+
+  /**
+   * 丢掉"不属于当前版本"的缓存文件。
+   *
+   * ## 为什么必须有这一步
+   *
+   * **安装包文件名跨版本是重复的**（0.1.1 和 0.1.2 都叫
+   * `KuaiBan_aarch64.app.tar.gz`）。而缓存是按文件名存的，于是发新版本后
+   * 服务器仍然把**旧版本的文件**按同一个 URL 发出去。
+   *
+   * 后果很隐蔽：清单里的签名是新的、URL 也对，但**文件是旧的**，
+   * 客户端下载完做签名校验就会失败（`The signature verification failed`）。
+   * 这和"签名缓存串版本"是同一个病根 —— 见 fetchSignature 的注释。
+   *
+   * ## 为什么用"大小比对"而不是"记住上一次的版本号"
+   *
+   * 记版本号的话，**进程重启后就忘了**，而那些陈旧文件还在磁盘上、照样会被发出去。
+   * 直接拿本地文件大小和当前 Release 声明的大小比，不一致就丢掉 ——
+   * 自愈，不依赖任何内存状态。
+   */
+  private dropStaleAssets(release: GithubRelease): void {
+    for (const asset of release.assets) {
+      if (asset.size <= 0) continue; // 没给出大小就不敢乱删
+      const local = join(this.dir, asset.name);
+      try {
+        if (!existsSync(local)) continue;
+        if (statSync(local).size !== asset.size) {
+          unlinkSync(local);
+        }
+      } catch {
+        // 删不掉就算了，下次预热还会再试
+      }
+    }
   }
 
   /**

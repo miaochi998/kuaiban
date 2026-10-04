@@ -5,7 +5,7 @@
  * （路径穿越是这类接口的经典漏洞，必须钉死。）
  */
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -231,6 +231,54 @@ describe("签名缓存必须按版本隔离", () => {
       currentVersion = "0.1.2";
       await store.refresh(true); // 跳过 5 分钟缓存
       expect(store.updaterManifest()!.platforms["darwin-aarch64"]!.signature).toBe("sig-for-0.1.2");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
+describe("发新版本后不能继续发旧文件", () => {
+  it("同名但内容不同的安装包必须被换掉", async () => {
+    // 真实事故：0.1.1 与 0.1.2 的更新包同名，服务器按文件名缓存，
+    // 于是发新版本后仍发出旧文件 → 客户端下载完签名校验失败
+    //   "The signature verification failed"
+    const d = mkdtempSync(join(tmpdir(), "kb-stale-"));
+    writeFileSync(join(d, "KuaiBan_aarch64.app.tar.gz"), Buffer.alloc(1000)); // 旧版本
+
+    const store = new ReleaseStore({ dir: d, origin: "https://x.com", githubRepo: "me/kb" });
+    const release = {
+      tag_name: "v0.2.0",
+      published_at: "2026-10-04T00:00:00Z",
+      body: "",
+      assets: [
+        { name: "KuaiBan_aarch64.app.tar.gz", url: "https://api.github.com/a/1",
+          browser_download_url: "x", size: 2000 },   // 新版本大小不同
+      ],
+    };
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("api.github.com")) return new Response(JSON.stringify(release), { status: 200 });
+      return new Response(Buffer.alloc(2000), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    try {
+      await store.refresh(true);
+
+      // 预热是后台异步的，轮询等它把新文件拉完（比死等固定毫秒稳）
+      const target = join(d, "KuaiBan_aarch64.app.tar.gz");
+      const deadline = Date.now() + 5000;
+      let size = -1;
+      while (Date.now() < deadline) {
+        size = existsSync(target) ? statSync(target).size : -1;
+        if (size === 2000 || size === -1) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      // 关键断言：**绝不能还是那 1000 字节的旧文件**。
+      // 不写死"必须是 2000"—— 预热是异步的，此刻它可能已下完（2000），
+      // 也可能正在下（旧文件已删、只剩 .partial，读到 -1）。两者都算对，
+      // 唯一的错误结果是把旧文件继续发出去。
+      expect(size).not.toBe(1000);
     } finally {
       globalThis.fetch = original;
     }

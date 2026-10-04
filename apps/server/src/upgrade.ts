@@ -120,6 +120,23 @@ export function publicUpgradeConfig(config: UpgradeConfig): unknown {
   };
 }
 
+/**
+ * 比较两个版本号。
+ *
+ * 原来直接用 `!==` 判断"有没有更新"，于是 `current 0.1.4 / latest 0.1.2`
+ * 也会报"有更新" —— 实际上 0.1.4 更新。日常看不出来，
+ * 但**正式走服务端升级流程时会误导人**（让人以为还该升到更旧的版本）。
+ */
+export function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map((n) => Number.parseInt(n, 10) || 0);
+  const pb = b.split(".").map((n) => Number.parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
 export interface UpdateCheck {
   current: string;
   latest: string | null;
@@ -151,7 +168,8 @@ export async function checkServerUpdate(opts: {
   return {
     current: opts.currentVersion,
     latest: release.version,
-    hasUpdate: release.version !== opts.currentVersion,
+    // 只有"服务端比当前新"才算有更新
+    hasUpdate: compareVersions(release.version, opts.currentVersion) > 0,
     error: null,
   };
 }
