@@ -216,7 +216,7 @@ export async function applyUpgrade(opts: {
     // 一开始只调了前者，拿到空的 StackFileContent 就 PUT 回去，
     // Portainer 报 `400 Invalid request payload: Invalid stack file content`
     // —— 这个错只有在真实 Portainer 上才会暴露，单元测试的假 fetch 发现不了。
-    const current = await doFetch(stackUrl, { headers, signal: AbortSignal.timeout(15_000) });
+    const current = await doFetch(stackUrl, { headers, signal: AbortSignal.timeout(60_000) });
     if (!current.ok) {
       return { ok: false, message: `读 Portainer 堆栈失败（HTTP ${current.status}）` };
     }
@@ -226,7 +226,9 @@ export async function applyUpgrade(opts: {
 
     const fileRes = await doFetch(`${base}/api/stacks/${env.stackId}/file?endpointId=${env.endpointId}`, {
       headers,
-      signal: AbortSignal.timeout(15_000),
+      // 读配置也要给足时间：实测 Portainer 偶发几十秒才响应，
+      // 原来给 15 秒会导致整个升级失败（而且报错写成"连不上"，误导排查方向）。
+      signal: AbortSignal.timeout(60_000),
     });
     if (!fileRes.ok) {
       return { ok: false, message: `读堆栈的 compose 内容失败（HTTP ${fileRes.status}）` };
@@ -251,28 +253,62 @@ export async function applyUpgrade(opts: {
     else envList.push({ name: "KUAIBAN_VERSION", value: opts.version });
 
     // 3) 提交回去并让 Portainer 拉新镜像重建
-    const deploy = await doFetch(stackUrl, {
+    //
+    // ⚠️ **这里刻意"发出去就不等返回"（fire-and-forget）**。
+    //
+    // 因为**服务器没法给自己做同步升级**：Portainer 的"更新堆栈"是同步接口，
+    // 重建容器这件事是在请求过程中做的。如果后台所在的容器正是被升级的那个，
+    // 请求还没返回、容器就死了 —— 升级流程中断，结果**什么都没发生**，
+    // 界面上看起来就是一直停在"正在通知 Portainer…"。
+    //
+    // 发出去之后不去 await 响应体，接口就能立刻返回；Portainer 那边收到请求后
+    // 继续把重建做完。（这与用户现有项目 bnoa 的做法一致。）
+    //
+    // 代价：拿不到 Portainer 的执行结果。所以"升级成没成功"要靠事后核对
+    // （Stack 的 UpdateDate 变了没、容器重建没），不能只看这一句返回。
+    const sent = doFetch(stackUrl, {
       method: "PUT",
       headers,
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(10_000),
       body: JSON.stringify({
         stackFileContent,
         env: envList,
         prune: false,
         pullImage: true,
       }),
-    });
+    }).catch(() => null);
 
-    if (!deploy.ok) {
-      const detail = await deploy.text().catch(() => "");
-      return { ok: false, message: `Portainer 拒绝了升级请求（HTTP ${deploy.status}）${detail.slice(0, 200)}` };
+    // 只等一小会儿看它是否"当场被拒"（比如权限不对、参数非法）。
+    // 等不到就认为请求已经发出去了 —— 对自我升级来说，"等不到"是正常现象。
+    const quick = await Promise.race([
+      sent,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 8_000)),
+    ]);
+
+    if (quick && !quick.ok) {
+      const detail = await quick.text().catch(() => "");
+      return { ok: false, message: `Portainer 拒绝了升级请求（HTTP ${quick.status}）${detail.slice(0, 200)}` };
     }
 
     return {
       ok: true,
-      message: `已触发升级到 ${opts.version}，容器正在重建。数据在宿主机目录里，不会丢。`,
+      message: `已触发升级到 ${opts.version}，容器正在重建。数据在宿主机目录里，不会丢。若这是本机，页面可能短暂断开，属正常。`,
     };
   } catch (err) {
-    return { ok: false, message: `连不上 Portainer：${err instanceof Error ? err.message : String(err)}` };
+    // 错误要分类说清，不要一律写成"连不上"。
+    // 之前正是因为把"等待超时"说成"连不上 Portainer"，才把人引去查网络
+    // （而实测容器内部访问对面 Portainer 是 200 / 32ms，网络完全正常）。
+    const e = err as { name?: string; message?: string; cause?: { code?: string } };
+    const code = e.cause?.code ?? "";
+    if (e.name === "TimeoutError" || code === "UND_ERR_CONNECT_TIMEOUT" || code === "ETIMEDOUT") {
+      return { ok: false, message: "等 Portainer 响应超时。它可能正在忙，稍等片刻重试。" };
+    }
+    if (code === "ECONNREFUSED") {
+      return { ok: false, message: "Portainer 拒绝连接（地址或端口不对，或服务没起来）。" };
+    }
+    if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
+      return { ok: false, message: "解析不到 Portainer 的主机名。" };
+    }
+    return { ok: false, message: `连不上 Portainer：${e.message ?? String(err)}` };
   }
 }

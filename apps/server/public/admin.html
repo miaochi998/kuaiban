@@ -324,6 +324,10 @@ async function create() {
 // ── 系统升级 ──
 
 let upgradeCfg = null;
+// 「检查更新」查到的最新版本。**开始升级时直接用它，不再让用户手输** ——
+// 用户刚点过检查更新，版本已经知道了；手输还容易输错（输成不存在的版本，
+// 升级就会失败，而且失败原因不明显）。
+let latestVersion = null;
 const IMAGE_KEY = "KUAIBAN_IMAGE_STORE"; // 存镜像名，避免每次都要重填
 
 async function loadUpgrade() {
@@ -399,10 +403,16 @@ async function checkUpdate() {
   $("check").disabled = true;
   try {
     const r = await api("/api/admin/upgrade/check", {});
+    latestVersion = r.latest || r.current;
     $("verLine").textContent = "当前版本 " + r.current;
     if (r.error) say("upMsg", r.error, "err");
     else if (r.hasUpdate) say("upMsg", "发现新版本 " + r.latest, "ok");
-    else say("upMsg", "已是最新版本（" + r.current + "）", "ok");
+    else {
+      // 版本相同时，"开始升级"这个说法是矛盾的（页面刚说"已是最新"）。
+      // 但重新拉镜像重建容器本身是合理需求，所以改个名字、说清用途。
+      say("upMsg", "已是最新版本（" + r.current + "）。如需重新拉取镜像重建容器，也可直接点右边。", "ok");
+    }
+    $("apply").textContent = r.hasUpdate ? ("升级到 " + r.latest) : "重建容器";
   } catch (err) {
     say("upMsg", err.message, "err");
   } finally {
@@ -413,8 +423,12 @@ async function checkUpdate() {
 async function applyUpgrade() {
   const envKey = $("envPick").value;
   const env = upgradeCfg.envs.find((e) => e.key === envKey);
-  const version = prompt("要升级到哪个版本？（例如 0.1.2）");
-  if (!version) return;
+  // 用「检查更新」查到的最新版本，不让用户手输
+  const version = latestVersion || $("verLine").textContent.replace(/[^0-9.]/g, "");
+  if (!version) {
+    say("upMsg", "请先点一下「检查更新」", "err");
+    return;
+  }
 
   if (!confirm("升级「" + env.label + "」到 " + version + "？\n容器会重建，数据不会丢。")) return;
 
@@ -427,6 +441,9 @@ async function applyUpgrade() {
       imageName: $("cfgImage").value.trim(),
     });
     say("upMsg", r.message, r.ok ? "ok" : "err");
+    if (r.ok) {
+      say("upMsg", r.message + "（约半分钟后刷新本页看版本）", "ok");
+    }
   } catch (err) {
     say("upMsg", err.message, "err");
   } finally {
