@@ -103,6 +103,7 @@
   .badge.up { background: #fef3c7; color: #92400e; }
   .badge.ok { background: #dcfce7; color: #166534; }
   .badge.no { background: #fee2e2; color: #991b1b; }
+  .badge.idle { background: #eef2f7; color: #64748b; }
 
   .envbox { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
   .envbox h3 { margin: 0 0 8px; font-size: 13px; }
@@ -375,11 +376,17 @@ function renderEnvCards() {
 
     const busy = Boolean(upgrading[e.key]);
     const hasUpdate = upgradeState.latest && e.version && verCmp(upgradeState.latest, e.version) > 0;
-    const badge = e.version
-      ? hasUpdate
-        ? '<span class="badge up">可升级到 ' + upgradeState.latest + "</span>"
-        : '<span class="badge ok">已是最新</span>'
-      : '<span class="badge no">版本未知</span>';
+
+    // ⚠️ 没查过最新版本时，**绝不能显示"已是最新"** —— 那是一句假结论，
+    // 会让人以为不用升级（实测就这样骗过了用户：测试机明明是 0.1.9，
+    // 页面上却写着"已是最新"）。不知道就说不知道。
+    const badge = !e.version
+      ? '<span class="badge no">版本未知</span>'
+      : !upgradeState.latest
+        ? '<span class="badge idle">点右上角「检查更新」看是否有新版</span>'
+        : hasUpdate
+          ? '<span class="badge up">可升级到 ' + upgradeState.latest + "</span>"
+          : '<span class="badge ok">已是最新</span>';
 
     card.innerHTML =
       '<div class="nm">' + e.label + "</div>" +
@@ -392,7 +399,9 @@ function renderEnvCards() {
         ? "正在升级至 " + (upgradeState.latest || e.version) + "…"
         : hasUpdate
           ? "升级到 " + upgradeState.latest
-          : "重新部署当前版本") +
+          : upgradeState.latest
+            ? "重新部署当前版本"
+            : "重新部署当前版本") +
       "</button>" +
       // 同一个按钮，随状态换名字和说明。
       // 原来"已是最新"时叫「重新拉镜像重建」—— 技术词，用户看不懂也不敢点，
