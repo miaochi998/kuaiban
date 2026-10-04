@@ -25,4 +25,14 @@ export interface TodoRepository {
 
   /** 按 id 覆盖写入（不存在则插入）。批量传入以减少往返 */
   upsert(todos: readonly Todo[]): Promise<void>;
+
+  /**
+   * 清空**本机**的全部待办。
+   *
+   * 只在一个场合用：这台电脑上的数据属于**别的账号**，而用户明确表示
+   * **不要这些数据**（见 sync.discardLocalData）。此时必须真的从本机删掉 ——
+   * 软删除不行，因为那等于"把上一个人的待办标记为已删"再同步出去，
+   * 会污染另一个账号的数据。
+   */
+  clear(): Promise<void>;
 }

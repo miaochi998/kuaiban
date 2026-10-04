@@ -34,6 +34,9 @@ class ExplodingRepository implements TodoRepository {
   async upsert(): Promise<void> {
     throw new Error(this.message);
   }
+  async clear(): Promise<void> {
+    throw new Error(this.message);
+  }
 }
 
 class ListFailsRepository extends MemoryTodoRepository {

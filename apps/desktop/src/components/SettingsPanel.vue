@@ -86,6 +86,24 @@ async function doLogin() {
   }
 }
 
+/**
+ * 放弃这台电脑上属于别的账号的数据。
+ *
+ * 不可撤销，所以必须二次确认 —— 而且确认文案要说清"只删本机"，
+ * 否则用户会以为自己在删服务端的东西、或者反过来。
+ */
+function discardLocal() {
+  const uid = account.user.value?.id;
+  if (!uid) return;
+  const ok = window.confirm(
+    "确定放弃这台电脑上的待办吗？\n\n" +
+      "· 只删本机这份数据，服务端上那个账号的东西不受影响\n" +
+      "· 这个操作不能撤销",
+  );
+  if (!ok) return;
+  sync.discardLocalData(uid);
+}
+
 async function doLogout() {
   sync.stopSync();
   await account.logout();
@@ -150,6 +168,20 @@ async function doLogout() {
           type="button"
           @click="sync.adoptLocalDataFor(account.user.value!.id)"
         >把本地待办过户给当前账号</button>
+
+        <!--
+          另一条出路：不要这些数据。
+          少了它，用户会被卡在"只能把别人的东西搬进自己账号"上 ——
+          而多数时候（测试数据、离职同事留下的数据）用户根本不想要它们。
+        -->
+        <button
+          class="sp-wide danger"
+          type="button"
+          @click="discardLocal"
+        >放弃这些待办，从空清单开始</button>
+        <p class="sp-note">
+          放弃<strong>只删这台电脑上的数据</strong>，不会动服务端上那个账号的任何东西。
+        </p>
       </div>
 
       <p class="sp-note">

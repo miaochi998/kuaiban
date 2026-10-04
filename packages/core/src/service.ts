@@ -108,6 +108,17 @@ export class TodoService {
     await this.repo.upsert([...items]);
   }
 
+  /**
+   * 清空本机全部待办。
+   *
+   * 只在"这台电脑上的数据属于别的账号、而用户明确不要它们"时调用
+   * （见桌面端 sync.discardLocalData）。**不是"把待办都删掉"** ——
+   * 那要走 remove 的软删除，会同步到服务端。这里删的是本机这份副本。
+   */
+  async clearAll(): Promise<void> {
+    await this.repo.clear();
+  }
+
   /** 跳过本次（"今天不做了，但系列继续"） */
   async skip(todo: Todo, dateKey: DateKey): Promise<Todo> {
     const next = skipOccurrence(todo, dateKey, this.clock());

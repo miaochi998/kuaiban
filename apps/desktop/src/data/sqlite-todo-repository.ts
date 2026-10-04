@@ -73,5 +73,20 @@ export async function createSqliteTodoRepository(): Promise<TodoRepository> {
         }
       }
     },
+
+    /**
+     * 清空本机全部待办。
+     *
+     * 用途只有一个：用户明确选择"放弃这台电脑上属于别的账号的数据"。
+     * 这里必须是**真删**，不能用软删除 —— 软删除等于把上一个人的待办
+     * 标记为已删再同步出去，反而会去改别的账号的数据。
+     */
+    async clear(): Promise<void> {
+      try {
+        await db.execute("DELETE FROM todos");
+      } catch (err) {
+        throw new Error(`[快办] 清空本地待办失败：${describeError(err)}`);
+      }
+    },
   };
 }

@@ -287,6 +287,32 @@ export function adoptLocalDataFor(userId: string): void {
   void syncNow();
 }
 
+/**
+ * 换了账号：**放弃**本机这份属于上一个账号的数据。
+ *
+ * 和 `adoptLocalDataFor`（过户）相对。有些场景用户根本不想要旧数据 ——
+ * 比如这台电脑上留的是测试数据、或者前一个使用者已经离职。
+ * 少了这条路，用户会被卡在"只能把别人的东西搬进自己账号"这一个选项上。
+ *
+ * 做法是**真的从本机删掉**，而不是软删除：软删除会把这些待办标记为已删
+ * 再同步出去，反而会去改另一个账号的数据。
+ */
+export function discardLocalData(userId: string): void {
+  void (async () => {
+    const ok = await todoStore.discardAllLocal();
+    if (!ok) return; // 清空失败就保持冲突状态，别假装成功了
+
+    // 游标和推送记录一起清掉：本机已经什么都没了，
+    // 留着旧游标只会让下一次同步去拉一份"别人的历史"。
+    state.value = { cursor: 0, pushedAt: {} };
+    ownerId.value = userId;
+    saveOwner(userId);
+    saveState(userId);
+    conflictOwner.value = null;
+    void syncNow();
+  })();
+}
+
 export function useSyncStore() {
   return {
     status,
@@ -297,6 +323,7 @@ export function useSyncStore() {
     startSync,
     stopSync,
     adoptLocalDataFor,
+    discardLocalData,
   };
 }
 

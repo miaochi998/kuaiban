@@ -310,6 +310,20 @@ export async function applySynced(merged: readonly Todo[]): Promise<boolean> {
   });
 }
 
+/**
+ * 清空**本机**全部待办。
+ *
+ * 只在一种情况下调用：这台电脑上的数据属于**别的账号**，而用户明确表示不要它们。
+ * 名称里特意带 `Local`，因为这个动作**不通知服务端** ——
+ * 它删的是本机这份数据，不是"把待办删掉"（那要走 removeTodo 的软删除）。
+ */
+export async function discardAllLocal(): Promise<boolean> {
+  return write("清空", async () => {
+    await requireService().clearAll();
+    todos.value = [];
+  });
+}
+
 /** 删除（软删除，数据还在库里，只是不再出现） */
 export async function removeTodo(todo: Todo): Promise<boolean> {
   return write("删除", async () => {
@@ -364,6 +378,7 @@ export function useTodoStore() {
     removeTodo,
     editTodo,
     applySynced,
+    discardAllLocal,
     carryOverAll,
     flashNotice,
   };

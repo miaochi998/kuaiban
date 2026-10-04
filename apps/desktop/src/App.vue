@@ -19,6 +19,7 @@ import { useAccountStore } from "./store/account";
 import { startSync, useSyncStore } from "./store/sync";
 import { startUpdater } from "./store/updater";
 import { useTodoStore, type PanelTab } from "./store/todos";
+import ForcePasswordChange from "./components/ForcePasswordChange.vue";
 
 // ─────────────────────────────────────────────────────────────
 // 外壳行为：悬停展开 / 移开收起 / 钉住 / 不抢焦点
@@ -436,6 +437,11 @@ function shiftMonth(delta: number) {
 
     <!-- ── 展开的面板 ──────────────────────────────────── -->
     <section class="panel">
+      <!--
+        首次登录必须先改密码 —— 盖住整个面板，改完才放行。
+        服务端早就标了 mustChangePassword，客户端一直没理会（见该组件的说明）。
+      -->
+      <ForcePasswordChange v-if="account.mustChangePassword.value" />
       <header class="head">
         <div class="head-date">{{ todayLabel }}</div>
         <div class="head-count">还有 <b>{{ remainingCount }}</b> 件</div>

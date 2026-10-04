@@ -43,6 +43,15 @@ const lastError = ref<string | null>(null);
 
 const loggedIn = computed(() => token.value !== null && user.value !== null);
 
+/**
+ * 是否必须先改密码。
+ *
+ * 服务端一直在登录响应里标这个字段，**但客户端从来没看过它** ——
+ * 于是管理员给的初始密码可以一直用下去，而初始密码是经聊天/文档传出去的，
+ * 那个"首次登录强制改密"的保护等于没有。现在由界面硬挡。
+ */
+const mustChangePassword = computed(() => user.value?.mustChangePassword === true);
+
 // ─────────────────────────────────────────────────────────────
 // 本地持久化
 // ─────────────────────────────────────────────────────────────
@@ -205,6 +214,7 @@ export function useAccountStore() {
     busy,
     lastError,
     loggedIn,
+    mustChangePassword,
     login,
     logout,
     changePassword,

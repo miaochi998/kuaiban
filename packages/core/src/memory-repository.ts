@@ -46,6 +46,10 @@ export class MemoryTodoRepository implements TodoRepository {
     for (const todo of todos) this.rows.set(todo.id, clone(todo));
   }
 
+  async clear(): Promise<void> {
+    this.rows.clear();
+  }
+
   /** 仅测试用：当前记录条数 */
   get size(): number {
     return this.rows.size;
