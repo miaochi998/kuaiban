@@ -371,6 +371,8 @@ export function createApp({ store, releases, disableRateLimit = false }: AppOpti
       }
 
       if (method === "POST" && path === "/api/admin/upgrade/check") {
+        // 点"检查更新"就该看到刚发布的东西，不能被 5 分钟缓存挡住
+        await releases?.refresh(true);
         return await checkServerUpdate({
           config: loadUpgradeConfig(store),
           currentVersion: process.env.KUAIBAN_VERSION ?? "未知",

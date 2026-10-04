@@ -185,3 +185,54 @@ describe("下载地址必须指向本站，不能是 GitHub", () => {
     expect(updater.platforms["darwin-x86_64"]).toBeUndefined();
   });
 });
+
+describe("签名缓存必须按版本隔离", () => {
+  it("两个版本的更新包同名时，不能把旧签名发出去", async () => {
+    // 真实场景：0.1.1 与 0.1.2 的更新包文件名完全一样
+    // （都叫 KuaiBan_aarch64.app.tar.gz.sig），按文件名缓存就会串版本。
+    // Tauri 的签名里带着版本号，客户端会因此拒绝更新：
+    //   "The update was signed for version 0.1.1 but the endpoint announced version 0.1.2"
+    const dir2 = mkdtempSync(join(tmpdir(), "kb-sig-"));
+    const store = new ReleaseStore({
+      dir: dir2,
+      origin: "https://kuaiban.bonnei.com",
+      githubRepo: "me/kuaiban",
+    });
+
+    let currentVersion = "0.1.1";
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("api.github.com") && url.includes("/releases/latest")) {
+        return new Response(
+          JSON.stringify({
+            tag_name: `v${currentVersion}`,
+            published_at: "2026-10-04T00:00:00Z",
+            body: "",
+            assets: [
+              { name: "KuaiBan_aarch64.app.tar.gz", url: "https://api.github.com/a/1",
+                browser_download_url: "x", size: 100 },
+              { name: "KuaiBan_aarch64.app.tar.gz.sig", url: "https://api.github.com/a/2",
+                browser_download_url: "x", size: 10 },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      // 签名内容里带上版本，方便断言
+      return new Response(`sig-for-${currentVersion}`, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    try {
+      await store.refresh();
+      expect(store.updaterManifest()!.platforms["darwin-aarch64"]!.signature).toBe("sig-for-0.1.1");
+
+      // 发新版本：文件名一模一样，只有版本号变了
+      currentVersion = "0.1.2";
+      await store.refresh(true); // 跳过 5 分钟缓存
+      expect(store.updaterManifest()!.platforms["darwin-aarch64"]!.signature).toBe("sig-for-0.1.2");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});

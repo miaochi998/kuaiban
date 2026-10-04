@@ -128,9 +128,11 @@ export class ReleaseStore {
    * 失败时**保留上一次成功的结果** —— 网络抖一下不该让下载页变成空白。
    * 从没成功过才退回本地清单（本地开发用）。
    */
-  async refresh(): Promise<void> {
+  async refresh(force = false): Promise<void> {
     if (!this.githubRepo) return;
-    if (this.cached && Date.now() - this.cached.at < ReleaseStore.CACHE_MS) return;
+    // force：跳过 5 分钟缓存。**发完版点"检查更新"时必须 force**，
+    // 否则会拿到刚发布的旧结果、以为没更新。
+    if (!force && this.cached && Date.now() - this.cached.at < ReleaseStore.CACHE_MS) return;
 
     const release = await fetchLatestRelease({
       repo: this.githubRepo,
@@ -279,7 +281,7 @@ export class ReleaseStore {
       const sigAsset = release.assets.find((a) => a.name === `${asset.name}.sig`);
       if (!sigAsset) continue;
 
-      const signature = await this.fetchSignature(sigAsset, cacheDir);
+      const signature = await this.fetchSignature(sigAsset, cacheDir, release.version);
       if (!signature) continue;
 
       // 同样用本站地址 —— 自动更新也得走公司服务器，否则同事那边更新不了
@@ -321,12 +323,28 @@ export class ReleaseStore {
     return null;
   }
 
-  /** 下载签名文件（并把结果缓存到磁盘，GitHub 抖了也能用上一次的） */
+  /**
+   * 下载签名文件（并把结果缓存到磁盘，GitHub 抖了也能用上一次的）。
+   *
+   * ⚠️ **缓存目录必须带上版本号**。
+   * Tauri 的签名里带着「签的是哪个版本」（trusted comment 里的 `version:`），
+   * 它会拿这个跟清单里的版本比对，对不上就**拒绝更新**并提示
+   * "The update was signed for version X but the endpoint announced version Y"。
+   *
+   * 而更新包的文件名**跨版本是重复的**（0.1.1 和 0.1.2 都叫
+   * `KuaiBan_aarch64.app.tar.gz.sig`）。一开始按文件名缓存，于是 0.1.2
+   * 直接命中了 0.1.1 的签名 → 服务端把旧签名发出去 → 客户端拒绝更新。
+   * 这个错是**真的在客户端上炸出来的**，服务端侧的检查（版本号、URL、签名长度）
+   * 全都看不出问题 —— 因为那些确实都是对的，只有签名内容不对。
+   */
   private async fetchSignature(
     asset: GithubAsset,
     cacheDir: string,
+    version: string,
   ): Promise<string | null> {
-    const cached = join(cacheDir, asset.name);
+    const versionDir = join(cacheDir, version);
+    mkdirSync(versionDir, { recursive: true });
+    const cached = join(versionDir, asset.name);
     try {
       if (existsSync(cached)) return readFileSync(cached, "utf8").trim();
     } catch {
