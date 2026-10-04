@@ -184,6 +184,8 @@ export async function logout(): Promise<void> {
     // 服务器联系不上也要让本地退出登录 —— 用户要的是"退出"，不是"退出成功"
   }
   clearSession();
+  // 通知同步层复位（动态引入避免模块循环依赖）
+  void import("./sync").then((m) => m.stopSync());
 }
 
 export async function changePassword(oldPassword: string, newPassword: string): Promise<boolean> {

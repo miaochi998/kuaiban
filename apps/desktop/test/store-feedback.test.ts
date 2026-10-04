@@ -185,3 +185,33 @@ describe("启动时读取失败", () => {
     expect(store.ready.value).toBe(true);
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// 放弃本机数据（"这台电脑上的待办属于别的账号，我不要它们"）
+// ─────────────────────────────────────────────────────────────
+
+describe("放弃本机数据", () => {
+  it("真的把本机记录清掉了，而不只是从界面隐藏", async () => {
+    const repo = new MemoryTodoRepository();
+    const store = await freshStore(repo);
+    await store.addTodo({ title: "别人留下的", date: "2026-10-04" });
+    expect(await repo.list()).toHaveLength(1);
+
+    const ok = await store.discardAllLocal();
+
+    expect(ok).toBe(true);
+    // 界面清空
+    expect(store.todos.value).toHaveLength(0);
+    // **仓储里也真的没了** —— 这是关键：
+    // 只清界面不清库的话，下次同步又会被拉回来 / 或者被推到新账号去。
+    expect(await repo.list()).toHaveLength(0);
+  });
+
+  it("写失败时返回 false 且不清空界面 —— 不能让用户以为成功了", async () => {
+    const store = await freshStore(new ExplodingRepository("磁盘写满了"));
+
+    const ok = await store.discardAllLocal();
+
+    expect(ok).toBe(false);
+  });
+});

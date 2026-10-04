@@ -258,6 +258,11 @@ export function startSync(): void {
 }
 
 export function stopSync(): void {
+  // 退出登录时冲突状态必须一起清掉。
+  // 否则会出现自相矛盾的界面：上面写着"未登录 —— 数据只在这台电脑上"，
+  // 下面却还挂着"这台电脑上的待办属于另一个账号"。
+  conflictOwner.value = null;
+
   if (watcher !== null) {
     watcher();
     watcher = null;

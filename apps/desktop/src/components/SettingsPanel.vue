@@ -92,16 +92,20 @@ async function doLogin() {
  * 不可撤销，所以必须二次确认 —— 而且确认文案要说清"只删本机"，
  * 否则用户会以为自己在删服务端的东西、或者反过来。
  */
+const confirmingDiscard = ref(false);
+const discarding = ref(false);
+
 function discardLocal() {
   const uid = account.user.value?.id;
   if (!uid) return;
-  const ok = window.confirm(
-    "确定放弃这台电脑上的待办吗？\n\n" +
-      "· 只删本机这份数据，服务端上那个账号的东西不受影响\n" +
-      "· 这个操作不能撤销",
-  );
-  if (!ok) return;
+  discarding.value = true;
   sync.discardLocalData(uid);
+  // discardLocalData 内部是异步的，这里给一点时间让界面反映"正在清空"；
+  // 真正是否成功由 sync/discardAllLocal 的失败提示体现（失败时冲突状态不会消失）。
+  window.setTimeout(() => {
+    discarding.value = false;
+    confirmingDiscard.value = false;
+  }, 600);
 }
 
 async function doLogout() {
@@ -174,14 +178,28 @@ async function doLogout() {
           少了它，用户会被卡在"只能把别人的东西搬进自己账号"上 ——
           而多数时候（测试数据、离职同事留下的数据）用户根本不想要它们。
         -->
-        <button
-          class="sp-wide danger"
-          type="button"
-          @click="discardLocal"
-        >放弃这些待办，从空清单开始</button>
-        <p class="sp-note">
-          放弃<strong>只删这台电脑上的数据</strong>，不会动服务端上那个账号的任何东西。
-        </p>
+        <!--
+          二次确认刻意做成**界面内**的，不用 window.confirm：
+          快办是个不抢焦点的浮动挂件，系统模态框在这种窗口里弹不出来
+          （实测点了没反应 —— confirm() 直接返回 false）。
+        -->
+        <template v-if="!confirmingDiscard">
+          <button class="sp-wide danger" type="button" @click="confirmingDiscard = true">
+            放弃这些待办，从空清单开始
+          </button>
+          <p class="sp-note">
+            放弃<strong>只删这台电脑上的数据</strong>，不会动服务端上那个账号的任何东西。
+          </p>
+        </template>
+        <template v-else>
+          <p class="sp-note danger-note">
+            确定放弃吗？<strong>只删本机这份数据</strong>，服务端上那个账号不受影响。这个操作不能撤销。
+          </p>
+          <button class="sp-wide danger" type="button" :disabled="discarding" @click="discardLocal">
+            {{ discarding ? "正在清空…" : "确定放弃" }}
+          </button>
+          <button class="sp-wide" type="button" @click="confirmingDiscard = false">算了，留着</button>
+        </template>
       </div>
 
       <p class="sp-note">
@@ -437,6 +455,10 @@ async function doLogout() {
   flex: 1;
   min-width: 0;
   margin-top: 0;
+}
+
+.danger-note {
+  color: #b45309;
 }
 
 .sp-note {
