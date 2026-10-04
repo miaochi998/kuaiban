@@ -75,29 +75,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: 把版本号同步进 tauri.conf.json 与 Cargo.toml
-        shell: bash
         env:
           VERSION_INPUT: ${{ github.event.inputs.version }}
-        run: |
-          node -e '
-            const fs = require("fs");
-            const v = (process.env.VERSION_INPUT || process.env.GITHUB_REF_NAME || "").replace(/^v/, "");
-            if (!/^\\d+\\.\\d+\\.\\d+$/.test(v)) { console.error("版本号不合法: " + v); process.exit(1); }
+        run: node scripts/ci-set-version.mjs
 
-            const tp = "apps/desktop/src-tauri/tauri.conf.json";
-            const conf = JSON.parse(fs.readFileSync(tp, "utf8"));
-            conf.version = v;
-            fs.writeFileSync(tp, JSON.stringify(conf, null, 2) + "\n");
-
-            // ⚠️ 这里刻意不用 sed。
-            // 原来写的是 `sed "0,/^version = /s//version = \"$V\"/"` ——
-            // `s//repl/` 只替换匹配到的那一小段（`version = `），**原来的版本号会留在后面**，
-            // 结果变成 `version = "0.1.1""0.1.1"`，Cargo 报 TOML 解析错误。
-            const cp = "apps/desktop/src-tauri/Cargo.toml";
-            fs.writeFileSync(cp, fs.readFileSync(cp, "utf8").replace(/^version = "[^"]+"/m, `version = "${v}"`));
-
-            console.log("版本已同步为 " + v);
-          '
       - name: 打包（含签名）
         env:
           # ⚠️ 这两个是 GitHub 仓库 Secrets。私钥**绝不能**进代码库：
@@ -109,38 +90,11 @@ jobs:
         run: pnpm --filter @kuaiban/desktop tauri build ${{ matrix.args }}
 
       - name: 把架构写进 macOS 更新包的文件名
-        # Tauri 打出来的更新包叫 `KuaiBan.app.tar.gz`，**文件名里没有架构信息**
-        # （架构只在目录名上，传到 Release 就丢了）。服务端据此区分芯片，
-        # 分不清就只能不发 —— 而"发错芯片的包"对用户是致命的。
-        #
-        # ⚠️ 用 node 而不是 shell：
-        # 原来写的 `[ -z "$arch" ] && arch="x64"` 在 arch **非空**时这个表达式返回 1，
-        # 被 GitHub Actions 默认的 `set -e` 直接终止脚本（Apple 芯片那台就是这么挂的）。
+        # Tauri 的更新包文件名里没有架构信息，服务端靠它区分芯片 ——
+        # 分不清就只能不发，因为发错芯片的包用户打不开。
         if: startsWith(matrix.os, 'macos')
-        run: |
-          node -e '
-            const fs = require("fs"), path = require("path");
-            const roots = ["apps/desktop/src-tauri/target"];
-            const hits = [];
-            const walk = (d) => {
-              for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-                const p = path.join(d, e.name);
-                if (e.isDirectory()) walk(p);
-                else if (/\.app\.tar\.gz(\.sig)?$/.test(e.name)) hits.push(p);
-              }
-            };
-            for (const r of roots) if (fs.existsSync(r)) walk(r);
+        run: node scripts/ci-rename-updater-artifacts.mjs
 
-            for (const p of hits) {
-              const arch = p.includes("aarch64") ? "aarch64" : "x64";
-              const next = path.join(path.dirname(p), path.basename(p).replace(/\.app\.tar\.gz/, `_${arch}.app.tar.gz`));
-              // 已经改过名的跳过（重跑时不会二次改名）
-              if (p === next) continue;
-              fs.renameSync(p, next);
-              console.log("→ " + path.basename(next));
-            }
-            console.log("共处理 " + hits.length + " 个文件");
-          '
       - name: 收集产物
         uses: actions/upload-artifact@v4
         with:
