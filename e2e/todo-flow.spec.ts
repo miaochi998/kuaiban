@@ -12,6 +12,25 @@ import { expect, test, type Page } from "@playwright/test";
  * 收集页面报错。
  * 未被捕获的 Promise 拒绝、console.error 都算 —— "点了没反应"往往就是它们。
  */
+/**
+ * 业务日（04:00 为界）当天的星期几，中文单字。
+ *
+ * 为什么需要它：循环待办的**开始日期会对齐到第一个匹配的日子**，
+ * 所以「每周六」只有在"今天正好是周六"时才会出现在「今天」列表里，
+ * 否则被排到未来（下周六）。
+ *
+ * 原来有两条测试把「每周六」写死 —— 于是**只在周六（且业务日仍是周六）通过**。
+ * 我是凌晨 1 点多跑通的（按 04:00 边界还算周六），下午 4 点多再跑就挂了。
+ * 用当天真实的星期几来构造，测试就不再依赖运行日期。
+ */
+function todayWeekdayCn(): string {
+  const d = new Date();
+  // 和业务逻辑保持一致：凌晨 04:00 之前算前一天
+  if (d.getHours() < 4) d.setDate(d.getDate() - 1);
+  // getDay(): 0=周日 … 6=周六，正好对应中文「日一二三四五六」
+  return ["日", "一", "二", "三", "四", "五", "六"][d.getDay()]!;
+}
+
 function collectErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
@@ -631,11 +650,14 @@ test("在编辑面板里把待办设成「每周六」（用户问的循环待�
   await page.press(".add", "Enter");
   await page.locator(".row", { hasText: "交周报" }).locator(".body").click();
 
+  const weekday = todayWeekdayCn();
   await page.locator(".es-chip", { hasText: "每周" }).click();
-  await page.locator(".es-chip.round", { hasText: "六" }).click();
+  // 选**今天**的星期几，这样开始日期就是今天、待办仍留在「今天」列表里。
+  // 写死「六」的话，非周六运行时会排到未来、这一行就不在「今天」了。
+  await page.locator(".es-chip.round", { hasText: weekday }).click();
   await page.locator(".es-btn.primary").click();
 
-  await expect(page.locator(".row", { hasText: "交周报" }).locator(".repeat")).toHaveText("🔁 每周六");
+  await expect(page.locator(".row", { hasText: "交周报" }).locator(".repeat")).toHaveText(`🔁 每周${weekday}`);
 });
 
 test("编辑面板：选每周却没选星期几时不给保存", async ({ page }) => {
@@ -685,13 +707,14 @@ test("编辑面板：可以删除", async ({ page }) => {
 // 输入框里直接写重复与中文时间
 // ─────────────────────────────────────────────────────────────
 
-test("输入「每周六 10:00 例会」→ 建出带重复的待办", async ({ page }) => {
-  await page.fill(".add", "每周六 10:00 例会");
+test("输入「每周X 10:00 例会」→ 建出带重复的待办", async ({ page }) => {
+  const weekday = todayWeekdayCn();
+  await page.fill(".add", `每周${weekday} 10:00 例会`);
   await page.press(".add", "Enter");
 
   const row = page.locator(".row", { hasText: "例会" });
   await expect(row).toBeVisible();
-  await expect(row.locator(".repeat")).toHaveText("🔁 每周六");
+  await expect(row.locator(".repeat")).toHaveText(`🔁 每周${weekday}`);
   await expect(row.locator(".time")).toHaveText("10:00");
 });
 
