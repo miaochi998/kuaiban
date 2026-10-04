@@ -434,6 +434,8 @@ async function loadUpgrade() {
   upgradeState.envs = data.envs || [];
   if (!upgradeState.current) upgradeState.current = upgradeState.envs[0]?.key || null;
   upgradeState.githubRepo = data.githubRepo || "";
+  upgradeState.imageName = data.imageName || "";
+  if ($("cfgImage")) $("cfgImage").value = upgradeState.imageName;
   renderEnvCards();
   renderEnvForms();
 }
@@ -465,6 +467,8 @@ async function saveUpgrade() {
   const cfg = {
     githubRepo: $("cfgRepo").value.trim(),
     githubToken: $("cfgToken").value,
+    // 镜像名存到服务端 —— 服务端版本就是读它的 tag，只放浏览器里换个浏览器就丢了
+    imageName: $("cfgImage").value.trim(),
     envs: (upgradeState.envs || []).map((e) => {
       const get = (k) => {
         const el = document.querySelector('[data-e="' + e.key + '"][data-k="' + k + '"]');
@@ -481,7 +485,6 @@ async function saveUpgrade() {
       };
     }),
   };
-  if ($("cfgImage")) localStorage.setItem(IMAGE_KEY, $("cfgImage").value.trim());
   try {
     await api("/api/admin/upgrade/config", { config: cfg });
     say("upMsg", "设置已保存", "ok");
@@ -543,7 +546,7 @@ async function doUpgrade(env) {
     const r = await api("/api/admin/upgrade/apply", {
       env: env.key,
       version: target,
-      imageName: $("cfgImage").value.trim(),
+      imageName: upgradeState.imageName || $("cfgImage").value.trim(),
     });
     if (!r.ok) {
       say("upMsg", r.message, "err");

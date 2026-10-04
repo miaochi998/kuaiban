@@ -25,6 +25,7 @@
  */
 
 import { fetchLatestRelease } from "./github-releases.ts";
+import { compareVersion as cmpTag, fetchImageTags, pickLatestVersion } from "./docker-hub.ts";
 import type { Store } from "./store.ts";
 
 /** 一个可升级的环境（测试 / 正式） */
@@ -43,9 +44,15 @@ export interface UpgradeEnvConfig {
 }
 
 export interface UpgradeConfig {
-  /** 从哪个 GitHub Release 读版本号 */
+  /** GitHub 仓库（仅供客户端版本相关用途；服务端版本已改读镜像 tag） */
   githubRepo: string;
   githubToken: string;
+  /**
+   * 服务端镜像名（如 `miaochi/kuaiban-server`）。
+   * **服务端版本就从它的 tag 读** —— 存在这里而不是只放在浏览器里，
+   * 否则后台刷新/换浏览器之后就不知道去哪查版本了。
+   */
+  imageName: string;
   envs: UpgradeEnvConfig[];
 }
 
@@ -56,6 +63,7 @@ export function defaultUpgradeConfig(): UpgradeConfig {
   return {
     githubRepo: "",
     githubToken: "",
+    imageName: "miaochi/kuaiban-server",
     envs: [
       {
         key: "test",
@@ -88,6 +96,7 @@ export function loadUpgradeConfig(store: Store): UpgradeConfig {
     return {
       githubRepo: parsed.githubRepo ?? base.githubRepo,
       githubToken: parsed.githubToken ?? base.githubToken,
+      imageName: parsed.imageName || base.imageName,
       // 逐个环境合并：新增的默认环境不会因为旧配置里没有而消失
       envs: base.envs.map((slot) => ({
         ...slot,
@@ -108,6 +117,7 @@ export function publicUpgradeConfig(config: UpgradeConfig): unknown {
   return {
     githubRepo: config.githubRepo,
     hasGithubToken: config.githubToken.length > 0,
+    imageName: config.imageName,
     envs: config.envs.map((e) => ({
       key: e.key,
       label: e.label,
@@ -144,14 +154,40 @@ export interface UpdateCheck {
   error: string | null;
 }
 
-/** 查有没有新版本（读 GitHub Release 的版本号） */
+/**
+ * 查服务端有没有新版本。
+ *
+ * **主用 Docker Hub 的镜像 tag**：后台要回答的是"服务端能不能升"，
+ * 而服务端版本的真正来源就是镜像 tag。这样"只发服务端镜像、不发客户端"
+ * 也能被后台看见并升级（客户端发不发与它无关）。
+ *
+ * 读不到 Docker Hub 时才退回 GitHub Release 的版本号作为兜底。
+ */
 export async function checkServerUpdate(opts: {
   config: UpgradeConfig;
   currentVersion: string;
 }): Promise<UpdateCheck> {
+  const image = opts.config.imageName || "miaochi/kuaiban-server";
+
+  const tags = await fetchImageTags(image);
+  if (tags.ok) {
+    const latest = pickLatestVersion(tags.versions);
+    if (!latest) {
+      return { current: opts.currentVersion, latest: null, hasUpdate: false, error: `镜像 ${image} 还没有版本 tag` };
+    }
+    return {
+      current: opts.currentVersion,
+      latest,
+      // 只有"镜像里有比当前更新的版本"才算有更新
+      hasUpdate: compareVersions(latest, opts.currentVersion) > 0,
+      error: null,
+    };
+  }
+
+  // ── 兜底：Docker Hub 读不到（网络/仓库问题）时看 GitHub Release ──
   const repo = opts.config.githubRepo || process.env.KUAIBAN_GITHUB_REPO || "";
   if (!repo) {
-    return { current: opts.currentVersion, latest: null, hasUpdate: false, error: "还没有配置 GitHub 仓库" };
+    return { current: opts.currentVersion, latest: null, hasUpdate: false, error: `读不到镜像 ${image} 的 tag，也没配 GitHub 仓库` };
   }
 
   const release = await fetchLatestRelease({
@@ -169,7 +205,7 @@ export async function checkServerUpdate(opts: {
     current: opts.currentVersion,
     latest: release.version,
     // 只有"服务端比当前新"才算有更新
-    hasUpdate: compareVersions(release.version, opts.currentVersion) > 0,
+    hasUpdate: cmpTag(release.version, opts.currentVersion) > 0,
     error: null,
   };
 }

@@ -368,6 +368,7 @@ export function createApp({ store, releases, disableRateLimit = false }: AppOpti
           hostVersion: process.env.KUAIBAN_VERSION ?? "未知",
           githubRepo: config.githubRepo,
           hasGithubToken: config.githubToken.length > 0,
+          imageName: config.imageName,
           envs,
         };
       }
@@ -384,6 +385,8 @@ export function createApp({ store, releases, disableRateLimit = false }: AppOpti
         const merged: UpgradeConfig = {
           githubRepo: incoming.githubRepo ?? previous.githubRepo,
           githubToken: incoming.githubToken || previous.githubToken,
+          // 镜像名存到服务端（原来只存在浏览器里，换个浏览器后台就不知道去哪查版本）
+          imageName: incoming.imageName?.trim() || previous.imageName,
           envs: previous.envs.map((slot) => {
             const next = incoming.envs.find((e) => e.key === slot.key);
             if (!next) return slot;
