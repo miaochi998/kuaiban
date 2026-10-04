@@ -174,6 +174,38 @@ export async function checkServerUpdate(opts: {
   };
 }
 
+/**
+ * 读某个环境【自己】当前跑的版本。
+ *
+ * ## 为什么必须有它
+ *
+ * 原来后台只显示一个"当前版本"，而那其实是**提供这个页面的服务器自己**的版本
+ * （你打开 https://kuaiban.bonnei.com/admin 就是正式机提供的）。
+ * 于是一个数字被两个环境共用，切来切去都一样 —— 用户根本分不清
+ * 升的到底是哪台、成没成功。
+ *
+ * 这里直接去**目标环境的 Portainer** 读它 Stack 上的 KUAIBAN_VERSION，
+ * 那才是"这台机器现在跑的是什么"。
+ */
+export async function readEnvVersion(
+  env: UpgradeEnvConfig,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string | null> {
+  if (!env.portainerUrl || !env.apiKey || !env.stackId || !env.endpointId) return null;
+  const base = env.portainerUrl.replace(/\/+$/, "");
+  try {
+    const res = await fetchImpl(`${base}/api/stacks/${env.stackId}?endpointId=${env.endpointId}`, {
+      headers: { "x-api-key": env.apiKey },
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!res.ok) return null;
+    const stack = (await res.json()) as { Env?: { name: string; value: string }[] };
+    return stack.Env?.find((e) => e.name === "KUAIBAN_VERSION")?.value ?? null;
+  } catch {
+    return null; // 读不到就说读不到，界面显示"未知"，不要瞎猜
+  }
+}
+
 export interface UpgradeResult {
   ok: boolean;
   message: string;

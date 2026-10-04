@@ -86,6 +86,22 @@
   }
   .hidden { display: none; }
   select { padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; font: inherit; background: #fbfcfd; width: 100%; }
+  .envcards { display: flex; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+  .envcard {
+    flex: 1 1 240px; padding: 14px; border: 2px solid var(--line);
+    border-radius: 12px; background: #fff; cursor: pointer;
+  }
+  .envcard.on { border-color: #3b82f6; background: #f7fbff; }
+  .envcard .nm { font-weight: 600; font-size: 14px; }
+  .envcard .ver { margin-top: 6px; font-size: 20px; font-weight: 700; }
+  .envcard .ver small { font-size: 12px; font-weight: 400; color: #8b94a1; }
+  .envcard .meta { margin-top: 6px; font-size: 12px; color: #8b94a1; word-break: break-all; }
+  .envcard .do { margin-top: 10px; width: 100%; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; }
+  .badge.up { background: #fef3c7; color: #92400e; }
+  .badge.ok { background: #dcfce7; color: #166534; }
+  .badge.no { background: #fee2e2; color: #991b1b; }
+
   .envbox { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
   .envbox h3 { margin: 0 0 8px; font-size: 13px; }
   .muted { color: var(--dim); font-size: 12px; }
@@ -142,18 +158,12 @@
     <div class="card">
       <h2>系统升级</h2>
 
-      <div class="row" style="align-items:center">
-        <span id="verLine" class="muted">当前版本 ——</span>
+      <div class="row" style="align-items:center;margin-top:12px">
+        <span class="muted">下面是两台机器各自的实际状态</span>
         <button class="ghost" id="check" style="flex:0 0 auto">检查更新</button>
       </div>
 
-      <div class="row" style="margin-top:12px">
-        <div>
-          <label>要升级哪个环境</label>
-          <select id="envPick"></select>
-        </div>
-        <button id="apply" style="flex:0 0 auto">开始升级</button>
-      </div>
+      <div id="envCards" class="envcards"></div>
 
       <p class="muted" style="margin-top:10px">
         升级会重建容器。数据存在宿主机的 /opt/kuaiban/data，<b>不会丢</b>。<br>
@@ -194,7 +204,15 @@
 <script>
 // 令牌只放内存（关了页面就要重新登录）。
 // 管理后台用得少，换来的是"令牌不会留在任何地方"。
-let token = null;
+// 登录令牌持久化到本机 —— 原来只放在内存变量里，**刷新一次就掉登录**，
+// 而"升级"这个动作恰恰需要刷新页面看结果，等于每次都要重登一遍。
+const TOKEN_KEY = "kuaiban.admin.token.v1";
+let token = localStorage.getItem(TOKEN_KEY) || null;
+function setToken(t) {
+  token = t || null;
+  if (t) localStorage.setItem(TOKEN_KEY, t);
+  else localStorage.removeItem(TOKEN_KEY);
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -224,7 +242,7 @@ async function login() {
   try {
     const data = await api("/api/login", { username: $("u").value.trim(), password: $("p").value });
     if (!data.user.isAdmin) throw new Error("这个账号不是管理员");
-    token = data.token;
+    setToken(data.token);
     $("p").value = "";
     $("login").classList.add("hidden");
     $("main").classList.remove("hidden");
@@ -322,35 +340,78 @@ async function create() {
 }
 
 // ── 系统升级 ──
+//
+// 设计要点（都是被用户体验问题逼出来的）：
+//  1. **每个环境显示自己的真实版本** —— 原来只有一个"当前版本"，而它其实是
+//     "提供这个页面的服务器"的版本；两个环境共用它，切换时纹丝不动，
+//     用户根本分不清升的是哪台、成没成功。
+//  2. **不用下拉菜单，用两张卡片** —— 下拉让人以为"当前版本"会跟着切。
+//  3. **触发后轮询目标环境** —— 真的变了才报成功；一直没变就明确报"没成功"。
+//     升级本来就是异步的，"已触发"这种说法对用户毫无意义。
 
-let upgradeCfg = null;
-// 「检查更新」查到的最新版本。**开始升级时直接用它，不再让用户手输** ——
-// 用户刚点过检查更新，版本已经知道了；手输还容易输错（输成不存在的版本，
-// 升级就会失败，而且失败原因不明显）。
-let latestVersion = null;
-const IMAGE_KEY = "KUAIBAN_IMAGE_STORE"; // 存镜像名，避免每次都要重填
+let upgradeState = { envs: [], latest: null, current: null };
+
+function verCmp(a, b) {
+  const pa = String(a).split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+function renderEnvCards() {
+  const box = $("envCards");
+  box.innerHTML = "";
+
+  for (const e of upgradeState.envs) {
+    const card = document.createElement("div");
+    card.className = "envcard" + (e.key === upgradeState.current ? " on" : "");
+
+    const hasUpdate = upgradeState.latest && e.version && verCmp(upgradeState.latest, e.version) > 0;
+    const badge = e.version
+      ? hasUpdate
+        ? '<span class="badge up">可升级到 ' + upgradeState.latest + "</span>"
+        : '<span class="badge ok">已是最新</span>'
+      : '<span class="badge no">版本未知</span>';
+
+    card.innerHTML =
+      '<div class="nm">' + e.label + "</div>" +
+      '<div class="ver">' + (e.version || "未知") + " <small>当前运行版本</small></div>" +
+      '<div class="meta">' + badge + "</div>" +
+      '<div class="meta">' + (e.portainerUrl || "未配置地址") +
+      (e.hasApiKey ? "" : " · 未配 Key") + "</div>" +
+      '<button class="ghost do" type="button">' +
+      (hasUpdate ? "升级到 " + upgradeState.latest : "重新拉镜像重建") +
+      "</button>";
+
+    card.onclick = (ev) => {
+      // 点卡片本身 = 选中（只是高亮，不影响操作）；点按钮 = 执行
+      if (ev.target.tagName === "BUTTON") return;
+      upgradeState.current = e.key;
+      renderEnvCards();
+    };
+    card.querySelector("button").onclick = () => doUpgrade(e);
+    box.appendChild(card);
+  }
+}
 
 async function loadUpgrade() {
   const data = await api("/api/admin/upgrade");
-  upgradeCfg = data.config;
-  $("verLine").textContent = "当前版本 " + data.currentVersion;
-  $("cfgRepo").value = upgradeCfg.githubRepo || "";
-  $("cfgImage").value = localStorage.getItem(IMAGE_KEY) || "";
+  upgradeState.envs = data.envs || [];
+  if (!upgradeState.current) upgradeState.current = upgradeState.envs[0]?.key || null;
+  upgradeState.githubRepo = data.githubRepo || "";
+  renderEnvCards();
+  renderEnvForms();
+}
 
-  // 环境下拉
-  const pick = $("envPick");
-  pick.innerHTML = "";
-  for (const e of upgradeCfg.envs) {
-    const opt = document.createElement("option");
-    opt.value = e.key;
-    opt.textContent = e.label + "（" + (e.portainerUrl || "未配置") + "）";
-    pick.appendChild(opt);
-  }
-
-  // 每个环境的表单
+/** 连接设置表单（每个环境一块）。跟上面卡片显示的是同一批数据。 */
+function renderEnvForms() {
   const box = $("envForms");
+  if (!box) return;
   box.innerHTML = "";
-  for (const e of upgradeCfg.envs) {
+  for (const e of upgradeState.envs) {
     const wrap = document.createElement("div");
     wrap.className = "envbox";
     wrap.innerHTML =
@@ -365,13 +426,14 @@ async function loadUpgrade() {
       "</div>";
     box.appendChild(wrap);
   }
+  if ($("cfgRepo")) $("cfgRepo").value = upgradeState.githubRepo;
 }
 
 async function saveUpgrade() {
   const cfg = {
     githubRepo: $("cfgRepo").value.trim(),
     githubToken: $("cfgToken").value,
-    envs: upgradeCfg.envs.map((e) => {
+    envs: (upgradeState.envs || []).map((e) => {
       const get = (k) => {
         const el = document.querySelector('[data-e="' + e.key + '"][data-k="' + k + '"]');
         return el ? el.value.trim() : "";
@@ -383,11 +445,11 @@ async function saveUpgrade() {
         apiKey: get("apiKey"),
         stackId: get("stackId"),
         endpointId: get("endpointId"),
-        imageVar: e.imageVar,
+        imageVar: e.imageVar || "KUAIBAN_IMAGE",
       };
     }),
   };
-  localStorage.setItem(IMAGE_KEY, $("cfgImage").value.trim());
+  if ($("cfgImage")) localStorage.setItem(IMAGE_KEY, $("cfgImage").value.trim());
   try {
     await api("/api/admin/upgrade/config", { config: cfg });
     say("upMsg", "设置已保存", "ok");
@@ -399,20 +461,15 @@ async function saveUpgrade() {
 }
 
 async function checkUpdate() {
-  say("upMsg", "");
+  say("upMsg", "正在检查…");
   $("check").disabled = true;
   try {
     const r = await api("/api/admin/upgrade/check", {});
-    latestVersion = r.latest || r.current;
-    $("verLine").textContent = "当前版本 " + r.current;
+    upgradeState.latest = r.latest || null;
     if (r.error) say("upMsg", r.error, "err");
-    else if (r.hasUpdate) say("upMsg", "发现新版本 " + r.latest, "ok");
-    else {
-      // 版本相同时，"开始升级"这个说法是矛盾的（页面刚说"已是最新"）。
-      // 但重新拉镜像重建容器本身是合理需求，所以改个名字、说清用途。
-      say("upMsg", "已是最新版本（" + r.current + "）。如需重新拉取镜像重建容器，也可直接点右边。", "ok");
-    }
-    $("apply").textContent = r.hasUpdate ? ("升级到 " + r.latest) : "重建容器";
+    else if (r.hasUpdate) say("upMsg", "GitHub 上最新版本：" + r.latest, "ok");
+    else say("upMsg", "GitHub 上最新版本：" + r.current + "（已发布的最新版）", "ok");
+    await loadUpgrade(); // 重新读各环境真实版本，卡片上的徽标会跟着更新
   } catch (err) {
     say("upMsg", err.message, "err");
   } finally {
@@ -420,44 +477,91 @@ async function checkUpdate() {
   }
 }
 
-async function applyUpgrade() {
-  const envKey = $("envPick").value;
-  const env = upgradeCfg.envs.find((e) => e.key === envKey);
-  // 用「检查更新」查到的最新版本，不让用户手输
-  const version = latestVersion || $("verLine").textContent.replace(/[^0-9.]/g, "");
-  if (!version) {
-    say("upMsg", "请先点一下「检查更新」", "err");
+/**
+ * 触发升级，并**轮询目标环境直到版本真的变了**。
+ *
+ * 为什么必须轮询：升级是异步的（Portainer 拉镜像 + 重建容器要几十秒），
+ * 接口能立刻返回的只有"已发出"。用户看到的"已触发升级"等于什么都没说 ——
+ * 他要知道的是**到底成没成**。所以这里每 5 秒去看一次目标环境自己的版本，
+ * 变了就报成功，超时就明确说"没成功"。
+ */
+async function doUpgrade(env) {
+  const target = upgradeState.latest || env.version;
+  if (!target) {
+    say("upMsg", "请先点「检查更新」", "err");
     return;
   }
+  const isSelf = env.key === upgradeState.envs.find((e) => e.key === "production")?.key;
+  const warn =
+    "升级「" + env.label + "」到 " + target + "？\n\n容器会重建，数据不会丢。" +
+    (env.key === upgradeState.current ? "" : "");
+  if (!window.confirm(warn)) return;
 
-  if (!confirm("升级「" + env.label + "」到 " + version + "？\n容器会重建，数据不会丢。")) return;
+  const before = env.version;
+  say("upMsg", "已发出升级请求，正在重建容器…（约半分钟，期间页面可能短暂无响应）");
 
-  say("upMsg", "正在通知 Portainer…");
-  $("apply").disabled = true;
   try {
     const r = await api("/api/admin/upgrade/apply", {
-      env: envKey,
-      version: version.trim(),
+      env: env.key,
+      version: target,
       imageName: $("cfgImage").value.trim(),
     });
-    say("upMsg", r.message, r.ok ? "ok" : "err");
-    if (r.ok) {
-      say("upMsg", r.message + "（约半分钟后刷新本页看版本）", "ok");
+    if (!r.ok) {
+      say("upMsg", r.message, "err");
+      return;
     }
   } catch (err) {
-    say("upMsg", err.message, "err");
-  } finally {
-    $("apply").disabled = false;
+    // 自我升级时请求可能因为容器被杀而中断 —— 这**不代表失败**，继续轮询看结果
+    say("upMsg", "请求已发出（页面连接可能已断开，属正常）。正在确认结果…");
   }
+
+  // 轮询：最多等 3 分钟
+  const deadline = Date.now() + 180_000;
+  while (Date.now() < deadline) {
+    await new Promise((res) => setTimeout(res, 5000));
+    try {
+      const d = await api("/api/admin/upgrade");
+      const now = (d.envs || []).find((x) => x.key === env.key);
+      if (now && now.version && now.version !== before) {
+        say("upMsg", "✅ 「" + env.label + "」已升级：" + before + " → " + now.version, "ok");
+        await loadUpgrade();
+        return;
+      }
+    } catch {
+      // 自我升级中页面会短暂连不上，继续等
+    }
+  }
+  say("upMsg", "⚠️ 等了 3 分钟，「" + env.label + "」的版本仍是 " + (before || "未知") + "，升级可能没有成功。请稍后刷新确认。", "err");
 }
 
-$("check").onclick = checkUpdate;
-$("apply").onclick = applyUpgrade;
-$("saveCfg").onclick = saveUpgrade;
+// 加保护：某个元素万一不在，也只是这一个按钮失效，
+// 不要让整段脚本挂掉（刚才就是漏了 #check 导致后面全废）。
+if ($("check")) $("check").onclick = checkUpdate;
+if ($("saveCfg")) $("saveCfg").onclick = saveUpgrade;
 
 $("go").onclick = login;
 $("create").onclick = create;
-$("logout").onclick = () => location.reload();
+$("logout").onclick = () => {
+  setToken(null);
+  location.reload();
+};
+
+// 带着已保存的令牌打开时，直接进主界面（刷新不再要求重登）。
+// 令牌失效的话，下面第一个请求会报 401，那时再退回登录页。
+(async () => {
+  if (!token) return;
+  try {
+    const d = await api("/api/admin/users");
+    $("login").classList.add("hidden");
+    $("main").classList.remove("hidden");
+    const me = (d.users || []).find((u) => u.isAdmin);
+    $("me").textContent = (me ? me.displayName + "（" + me.username + "）" : "管理员") + " · 已恢复登录";
+    await refresh().catch(() => {});
+    await loadUpgrade().catch(() => {});
+  } catch {
+    setToken(null); // 令牌已失效：清掉，回登录页
+  }
+})();
 for (const id of ["u", "p"]) {
   $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
 }

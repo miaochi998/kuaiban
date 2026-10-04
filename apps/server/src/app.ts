@@ -22,6 +22,7 @@ import type { ReleaseStore } from "./releases.ts";
 import {
   applyUpgrade,
   checkServerUpdate,
+  readEnvVersion,
   loadUpgradeConfig,
   publicUpgradeConfig,
   saveUpgradeConfig,
@@ -346,9 +347,28 @@ export function createApp({ store, releases, disableRateLimit = false }: AppOpti
       // ─────────────────────────────────────────────────────────
       if (method === "GET" && path === "/api/admin/upgrade") {
         const config = loadUpgradeConfig(store);
+
+        // 每个环境各自去读自己的真实版本（并发，读不到就是 null）。
+        // 单独返回 hostVersion 供排错参考，但界面上不再把它当成
+        // "测试/正式"的版本显示 —— 那是两个不同的东西。
+        const envs = await Promise.all(
+          config.envs.map(async (env) => ({
+            key: env.key,
+            label: env.label,
+            portainerUrl: env.portainerUrl,
+            hasApiKey: env.apiKey.length > 0,
+            stackId: env.stackId,
+            endpointId: env.endpointId,
+            imageVar: env.imageVar,
+            version: await readEnvVersion(env),
+          })),
+        );
+
         return {
-          currentVersion: process.env.KUAIBAN_VERSION ?? "未知",
-          config: publicUpgradeConfig(config),
+          hostVersion: process.env.KUAIBAN_VERSION ?? "未知",
+          githubRepo: config.githubRepo,
+          hasGithubToken: config.githubToken.length > 0,
+          envs,
         };
       }
 
