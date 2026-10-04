@@ -58,6 +58,22 @@ CI 会自动：构建 macOS（Apple 芯片 / Intel）+ Windows → 签名 → �
 
 > 失败时重跑：`gh workflow run release-client.yml --repo miaochi998/kuaiban -f version=0.2.0`
 
+### ★ 发完立刻"催"一次缓存预热（重要，否则第一个下载的人要等）
+
+服务端发现新版本后会**在后台把安装包拉到本地**，但预热是在它**下一次去问 GitHub** 时
+才启动的（结果缓存 5 分钟）。所以发布后如果没人访问，预热就不会开始 ——
+这期间第一个点下载的同事要等服务器从 GitHub 取完（实测 3.2MB 要 60 秒以上）。
+
+**打一次 `/api/releases` 就能立刻触发预热**：
+
+```bash
+curl -sS -o /dev/null https://kuaiban.bonnei.com/api/releases
+# 等 2~3 分钟让后台拉完，然后下载就是本地直读（毫秒级）
+```
+
+（同一个域名也会触发测试机那一侧？不会 —— 域名只指生产机。测试机需要时，
+用 `curl -sS -o /dev/null http://192.168.2.6:6522/api/releases` 单独催一次。）
+
 ### 验证（必做）
 
 ```bash
