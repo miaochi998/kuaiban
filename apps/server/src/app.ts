@@ -214,6 +214,14 @@ export function createApp({ store, releases, disableRateLimit = false }: AppOpti
     // ── 发布下载页的数据（公开，不需要登录）──
     // 没有发布目录时也返回结构完整的空清单：页面要能优雅地显示"即将推出"，
     // 而不是转圈或者报错。
+    // CI 发完版本调一下这里，立刻开始预热（不用等人访问）。
+    // 刻意不需要登录：它只能触发一次"去 GitHub 看看有没有新版本 + 拉一下包"，
+    // 且内部尊重缓存（force 也只是一次网络请求），被刷也不会打爆 GitHub。
+    if (method === "POST" && path === "/api/refresh") {
+      await releases?.refresh(true);
+      return { ok: true };
+    }
+
     if (method === "GET" && path === "/api/releases") {
       await releases?.refresh();
       return (

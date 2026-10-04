@@ -23,12 +23,19 @@ on:
         description: "版本号（例如 0.1.2）"
         required: true
         type: string
+      server_only:
+        description: "只构建服务端镜像（不动客户端）"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
   build:
+    # server_only 时跳过客户端打包（纯服务端改动不该惊动同事去更新客户端）
+    if: ${{ github.event_name == 'push' || inputs.server_only != true }}
     name: 打包 ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -158,6 +165,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   release:
+    if: ${{ github.event_name == 'push' || inputs.server_only != true }}
     name: 发 Release
     needs: build
     runs-on: ubuntu-latest
