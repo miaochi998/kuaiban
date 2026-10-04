@@ -481,6 +481,19 @@ e2e 新增 6 个日历用例（原"日历不该能加"的用例已改写），�
 【已触发】`git push -f origin v0.1.1` → GitHub Actions「发布客户端」运行中（run id 37171004536），将构建 macOS（Apple 芯片+Intel）与 Windows 安装包并创建 Release。**尚未验证 CI 结果**（本轮结束时仍在跑）。
 
 【剩余待办】**三项均属运维（已在其待办清单内）**：1) UFW 放行 `6522/tcp`（来源限 `192.168.2.0/24` + `47.105.64.102`）；2) 路由器映射 外网 `16522` → `192.168.2.10:6522`；3) 阿里云 NPM 配 Proxy Host `kuaiban.bonnei.com` + Let's Encrypt 证书 + `client_max_body_size 200m;`。三项完成后 `https://kuaiban.bonnei.com` 即可用。另需：盯 CI 跑完并验证"下载页自动出现安装包 + 客户端自动更新"整条链路。全仓 568 个测试。
+- [2026-10-04 11:47] [工作记录] CI 首跑失败排查：pnpm 版本冲突与 macos-13 退役（b8a8748） — commit b8a8748。**CI 首跑失败，已查出并修掉两个根因**，重新触发后 macOS 两条均正常构建。
+
+【根因 1：pnpm 版本冲突（导致 macOS-Apple芯片 与 Windows 两个 job 直接失败）】`.github/workflows/release-client.yml` 里写了 `pnpm/action-setup@v4 with: version: 10`，而根 `package.json` 已有 `"packageManager": "pnpm@10.23.0"` —— **两处同时指定会让 action 立即报 "Multiple versions of pnpm specified" 并失败**。修法：**删掉 action 里的 `version:`，让 package.json 的 packageManager 成为唯一来源**。
+
+【根因 2：`macos-13` runner 标签正在被 GitHub 淘汰】Intel 那个 matrix job **永远停在 queued 排不到机器**（表现得像"还在跑"，实际是卡死）。改用 **`macos-15-intel`** 后立即开始构建。**排查提示：GitHub Actions 里"长时间 queued"通常意味着该 runner 标签已下线或账号额度不足，不是任务在排队等待。**
+
+【当前状态（未完成）】重新触发 run 37174961980：macOS · Apple 芯片 与 macOS · Intel 均 `in_progress` ✅；**Windows 仍 failure，原因未知** —— GitHub 在运行进行中不提供日志，需等整个 run 结束才能 `gh run view --job <id> --log` 查看。Windows 常见嫌疑：WebView2/NSIS 打包、签名步骤差异、或我给 Windows 传了空参数 `--target ""`。**尚未修复。**
+
+【诊断命令备忘】`gh run view <id> --repo miaochi998/kuaiban --json jobs -q '.jobs[] | "\(.name): \(.status) \(.conclusion)"'` 看各 job；`--json jobs -q '.jobs[] | select(.name|test("Windows")) | .databaseId'` 取 job id；`gh run view --job <jobid> --log` 取日志（**运行结束前不可用**）；`gh run cancel <id>` 取消卡死运行；`gh workflow run release-client.yml -f version=0.1.1` 手动触发。
+
+【CLI 的已知限制】`gh api /user` 取不到 `plan`（返回"未知"）、`/users/<u>/settings/billing/actions` 返回 404 且提示需要 `user` scope —— **本机 gh token 的 scopes 是 gist/read:org/repo/workflow，查不了套餐与 Actions 额度**。若以后要排查"额度耗尽导致 queued"，需要 `gh auth refresh -h github.com -s user`。
+
+【本轮结论】先把 macOS 跑完并验证下载页/自动更新链路；Windows 待拿到日志后单独修。全仓 568 个测试。
 
 ## 经验教训 Lessons Learned
 
@@ -637,6 +650,10 @@ unsafe { let w = ptr as *mut AnyObject; let _: () = msg_send![w, setAcceptsMouse
 2) **Docker 对缺失的 bind-mount 源目录会自动创建为 root:root**，而容器内非 root 用户（如 node 镜像的 uid 1000）将无法写入 → SQLite 打不开、容器起不来。**必须在部署前显式预建目录并 chown 到容器用户 uid**。若无 SSH，可借 Portainer API 起一个"挂载宿主目录的一次性容器"来执行 mkdir/chown，用完即删。
 3) **通过 Portainer 创建一次性容器时，它不会自动拉取镜像**（报 `No such image`）。要选用**目标主机上已存在**的镜像，或先调镜像拉取接口。
 4) **凡"需要用户去面板点几下"的部署步骤，先确认自己能否用其 REST API 代劳**——本轮建 Stack、建目录、写后台配置全部由 API 完成，用户零手动配合，这是用户明确期望的工作方式。
+- [2026-10-04 11:47] [经验教训] pnpm action 勿重复指定版本、queued 即 runner 标签失效、run 进行中无日志 — 1) **`pnpm/action-setup` 不要写 `with: version:`**，只要项目根 `package.json` 里有 `packageManager` 字段，两处同时指定会让 action 直接报 `Multiple versions of pnpm specified` 并失败（本项目首跑 CI 就是这么挂的）。让 `packageManager` 作为唯一版本来源。
+2) **GitHub Actions 里 job 长时间停留在 `queued`，几乎总是该 runner 标签已被下线或账号额度不足**，而不是"任务在排队"。本项目 `macos-13`（已退役）就表现为永久 queued；换成 `macos-15-intel` 立即开始。**排查时不要把它当成"还在跑"。**
+3) **GitHub 在 workflow run 进行中不提供日志**（`gh run view --job <id> --log` 会提示 logs will be available when it is complete）。要定位某 job 的失败原因，只能等整个 run 结束；期间可用 `--json jobs` 看各 job 状态与**失败的具体步骤名**缩小范围。
+4) 用 `gh` 排查账号套餐/Actions 额度需要 `user` scope；默认的 `repo`/`workflow` scope 查不到（`/user` 的 plan 字段为空、billing 接口 404）。
 
 ## 行动指南 Action Guide
 
