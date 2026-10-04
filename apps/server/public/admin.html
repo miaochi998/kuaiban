@@ -97,6 +97,7 @@
   .envcard .ver small { font-size: 12px; font-weight: 400; color: #8b94a1; }
   .envcard .meta { margin-top: 6px; font-size: 12px; color: #8b94a1; word-break: break-all; }
   .envcard .do { margin-top: 10px; width: 100%; }
+  .busy-hint { color: #2563eb; font-weight: 500; }
   .hint { margin-top: 8px; font-size: 11px; line-height: 1.5; color: #8b94a1; }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; }
   .badge.up { background: #fef3c7; color: #92400e; }
@@ -351,6 +352,8 @@ async function create() {
 //     升级本来就是异步的，"已触发"这种说法对用户毫无意义。
 
 let upgradeState = { envs: [], latest: null, current: null };
+// 每个环境是否正在升级中（按环境记，不要全局一个 —— 可以先后升两台）
+const upgrading = {};
 
 function verCmp(a, b) {
   const pa = String(a).split(".").map((n) => parseInt(n, 10) || 0);
@@ -370,6 +373,7 @@ function renderEnvCards() {
     const card = document.createElement("div");
     card.className = "envcard" + (e.key === upgradeState.current ? " on" : "");
 
+    const busy = Boolean(upgrading[e.key]);
     const hasUpdate = upgradeState.latest && e.version && verCmp(upgradeState.latest, e.version) > 0;
     const badge = e.version
       ? hasUpdate
@@ -383,13 +387,19 @@ function renderEnvCards() {
       '<div class="meta">' + badge + "</div>" +
       '<div class="meta">' + (e.portainerUrl || "未配置地址") +
       (e.hasApiKey ? "" : " · 未配 Key") + "</div>" +
-      '<button class="ghost do" type="button">' +
-      (hasUpdate ? "升级到 " + upgradeState.latest : "重新部署当前版本") +
+      '<button class="ghost do" type="button"' + (busy ? " disabled" : "") + ">" +
+      (busy
+        ? "正在升级至 " + (upgradeState.latest || e.version) + "…"
+        : hasUpdate
+          ? "升级到 " + upgradeState.latest
+          : "重新部署当前版本") +
       "</button>" +
       // 同一个按钮，随状态换名字和说明。
       // 原来"已是最新"时叫「重新拉镜像重建」—— 技术词，用户看不懂也不敢点，
       // 只能来问"这是什么、什么时候用"。按钮旁边必须自己把话说清楚。
-      (hasUpdate
+      (busy
+        ? '<div class="hint busy-hint">' + (upgrading[e.key].text || "正在重建容器…") + "</div>"
+        : hasUpdate
         ? '<div class="hint">把它升到 ' + upgradeState.latest + "（容器会重建，数据不丢）</div>"
         : '<div class="hint">版本不变，只把容器按当前配置重建一遍。' +
           "适合：容器状态异常想重启、或想重新拉一次镜像。" +
@@ -401,7 +411,11 @@ function renderEnvCards() {
       upgradeState.current = e.key;
       renderEnvCards();
     };
-    card.querySelector("button").onclick = () => doUpgrade(e);
+    // 升级中的按钮不可点（按钮本身也 disabled，这里再兜一层）
+    card.querySelector("button").onclick = () => {
+      if (upgrading[e.key]) return;
+      doUpgrade(e);
+    };
     box.appendChild(card);
   }
 }
@@ -507,7 +521,14 @@ async function doUpgrade(env) {
   if (!window.confirm(warn)) return;
 
   const before = env.version;
-  say("upMsg", "已发出升级请求，正在重建容器…（约半分钟，期间页面可能短暂无响应）");
+
+  // 进入"升级中"：按钮变文案 + 禁用，卡片上显示实时进度。
+  // 原来点完之后按钮毫无反应、还能再点，用户根本不知道到底有没有点上。
+  const setBusy = (text) => {
+    upgrading[env.key] = { text };
+    renderEnvCards();
+  };
+  setBusy("正在通知服务器…");
 
   try {
     const r = await api("/api/admin/upgrade/apply", {
@@ -519,28 +540,51 @@ async function doUpgrade(env) {
       say("upMsg", r.message, "err");
       return;
     }
-  } catch (err) {
-    // 自我升级时请求可能因为容器被杀而中断 —— 这**不代表失败**，继续轮询看结果
-    say("upMsg", "请求已发出（页面连接可能已断开，属正常）。正在确认结果…");
+  } catch {
+    // 自我升级时请求会因为容器被杀而中断 —— 这**不代表失败**，继续轮询看结果
   }
 
-  // 轮询：最多等 3 分钟
-  const deadline = Date.now() + 180_000;
+  // 轮询：最多等 3 分钟。**每一步都把进度说出来**（等了多少秒、试到第几次），
+  // 而不是一句"正在重建容器…"挂在那里让人干等。
+  const start = Date.now();
+  const deadline = start + 180_000;
+  let tries = 0;
+  let offline = 0;
+
   while (Date.now() < deadline) {
     await new Promise((res) => setTimeout(res, 5000));
+    tries += 1;
+    const waited = Math.round((Date.now() - start) / 1000);
+    setBusy("正在确认结果…已等 " + waited + " 秒（最多 3 分钟）");
+
     try {
       const d = await api("/api/admin/upgrade");
+      offline = 0;
       const now = (d.envs || []).find((x) => x.key === env.key);
       if (now && now.version && now.version !== before) {
+        delete upgrading[env.key];
         say("upMsg", "✅ 「" + env.label + "」已升级：" + before + " → " + now.version, "ok");
         await loadUpgrade();
         return;
       }
+      if (now) {
+        setBusy("容器正在重建…当前仍是 " + (now.version || "未知") + "，已等 " + waited + " 秒");
+      }
     } catch {
-      // 自我升级中页面会短暂连不上，继续等
+      // 自我升级时容器正被杀掉，页面会短暂连不上 —— 这是预期内的，说明重建在进行
+      offline += 1;
+      setBusy("容器正在重建（页面暂时连不上，属正常）…已等 " + waited + " 秒");
     }
   }
-  say("upMsg", "⚠️ 等了 3 分钟，「" + env.label + "」的版本仍是 " + (before || "未知") + "，升级可能没有成功。请稍后刷新确认。", "err");
+
+  delete upgrading[env.key];
+  renderEnvCards();
+  say(
+    "upMsg",
+    "⚠️ 等了 3 分钟，「" + env.label + "」的版本仍是 " + (before || "未知") +
+      "，升级可能没有成功（查询尝试 " + tries + " 次）。请稍后刷新本页确认。",
+    "err",
+  );
 }
 
 // 加保护：某个元素万一不在，也只是这一个按钮失效，
