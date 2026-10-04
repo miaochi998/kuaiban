@@ -90,11 +90,17 @@ describe("触发升级", () => {
   it("把镜像那一项换成新版本，并要求 Portainer 重新拉镜像", async () => {
     let putBody: Record<string, unknown> | null = null;
 
-    const fakeFetch = vi.fn(async (_url: string, init?: RequestInit) => {
+    const fakeFetch = vi.fn(async (url: string, init?: RequestInit) => {
       if (!init?.method || init.method === "GET") {
+        // compose 内容要单独从 /file 拿（Portainer 的 /stacks/{id} 不含它）
+        if (String(url).includes("/file")) {
+          return new Response(
+            JSON.stringify({ StackFileContent: "services:\n  kuaiban:\n    image: ${KUAIBAN_IMAGE}\n" }),
+            { status: 200 },
+          );
+        }
         return new Response(
           JSON.stringify({
-            StackFileContent: "services:\n  kuaiban:\n    image: ${KUAIBAN_IMAGE}\n",
             Env: [
               { name: "KUAIBAN_PORT", value: "6522" },
               { name: "KUAIBAN_IMAGE", value: "miaochi/kuaiban-server:0.1.1" },
@@ -125,9 +131,12 @@ describe("触发升级", () => {
 
   it("原来没有镜像这一项时会加进去", async () => {
     let putBody: Record<string, unknown> | null = null;
-    const fakeFetch = vi.fn(async (_url: string, init?: RequestInit) => {
+    const fakeFetch = vi.fn(async (url: string, init?: RequestInit) => {
       if (!init?.method || init.method === "GET") {
-        return new Response(JSON.stringify({ StackFileContent: "services: {}", Env: [] }), { status: 200 });
+        if (String(url).includes("/file")) {
+          return new Response(JSON.stringify({ StackFileContent: "services: {}" }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ Env: [] }), { status: 200 });
       }
       putBody = JSON.parse(String(init.body)) as Record<string, unknown>;
       return new Response("{}", { status: 200 });
@@ -137,6 +146,22 @@ describe("触发升级", () => {
 
     const sentEnv = putBody!.env as { name: string; value: string }[];
     expect(sentEnv).toEqual([{ name: "KUAIBAN_IMAGE", value: "miaochi/kuaiban-server:0.1.2" }]);
+  });
+
+  it("拿不到 compose 内容时必须拒绝 —— 盲改会把堆栈写坏", async () => {
+    const fakeFetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (!init?.method || init.method === "GET") {
+        if (String(url).includes("/file")) {
+          return new Response(JSON.stringify({ StackFileContent: "" }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ Env: [] }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const result = await applyUpgrade({ env, version: "0.1.2", imageName: "x/y", fetchImpl: fakeFetch });
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("空的");
   });
 
   it("配置不全时明确拒绝，不去瞎试", async () => {

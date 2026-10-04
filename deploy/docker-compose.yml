@@ -51,6 +51,14 @@ services:
       # 升级时由后台改 KUAIBAN_IMAGE，这里同步改一下即可。
       KUAIBAN_VERSION: "${KUAIBAN_VERSION:-0.1.1}"
 
+      # ⚠️ 这两项必须在这里显式写出来。
+      # Portainer 的 Stack 环境变量**只是给 compose 做变量替换用的** ——
+      # 没在 compose 里写 ${VAR} 的地方，那个变量就不会进容器。
+      # （一开始漏了这两行，结果服务器拿不到 GitHub 配置，
+      #   下载页永远是空的，而且日志上完全看不出问题。）
+      KUAIBAN_GITHUB_REPO: "${KUAIBAN_GITHUB_REPO}"
+      KUAIBAN_GITHUB_TOKEN: "${KUAIBAN_GITHUB_TOKEN}"
+
       KUAIBAN_DB: /data/kuaiban.db
       KUAIBAN_RELEASES_DIR: /data/releases
       PORT: "6520"

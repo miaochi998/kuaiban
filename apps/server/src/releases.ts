@@ -20,7 +20,7 @@
  * 这样换域名（或本地测试）不用重新发一遍版。
  */
 
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -112,6 +112,9 @@ export class ReleaseStore {
   /** 正在回源的文件的等待者，避免两个人同时点同一个包时下载两遍 */
   private readonly inflight = new Map<string, Promise<string>>();
 
+  /** 预热是否在进行中（避免重复跑） */
+  private warming = false;
+
   constructor(opts: { dir: string; origin: string; githubRepo?: string; githubToken?: string }) {
     this.dir = opts.dir;
     this.origin = opts.origin.replace(/\/+$/, "");
@@ -140,6 +143,60 @@ export class ReleaseStore {
       listing: this.listingFromGithub(release),
       updater: await this.updaterFromGithub(release),
     };
+
+    // 后台把安装包先拉下来。
+    //
+    // 不预热的话，**第一个点下载的同事要等服务器从 GitHub 取完**——
+    // 实测 3.2MB 要 110 秒，体验很差（而且还会超时）。
+    // 预热之后所有人都是本地直读（毫秒级）。
+    // 刻意不 await：不阻塞这次请求，失败了下次刷新再试。
+    void this.warmCache(release);
+  }
+
+  /**
+   * 把这次 Release 的安装包预先拉到本地。
+   *
+   * 只处理"要给同事下载的东西"（安装包 + 更新包 + 签名），
+   * 而且已经在本地的不重复拉。
+   */
+  private async warmCache(release: GithubRelease): Promise<void> {
+    if (this.warming) return;
+    this.warming = true;
+    try {
+      this.cleanPartials();
+
+      for (const asset of release.assets) {
+        if (!/\.(dmg|exe|msi|apk|app\.tar\.gz|nsis\.zip)(\.sig)?$/i.test(asset.name)) continue;
+        if (this.resolveFile(asset.name)) continue; // 已经有了
+        try {
+          await this.ensureAsset(asset.name);
+        } catch {
+          // 单个文件失败不影响其他；下一次刷新会重试
+        }
+      }
+    } finally {
+      this.warming = false;
+    }
+  }
+
+  /**
+   * 清掉上次没下完的 `.partial`。
+   *
+   * 中断的下载会留下半截文件，不该让它永远占着磁盘。
+   */
+  private cleanPartials(): void {
+    try {
+      for (const name of readdirSync(this.dir)) {
+        if (!name.endsWith(".partial")) continue;
+        try {
+          unlinkSync(join(this.dir, name));
+        } catch {
+          /* 删不掉就算了 */
+        }
+      }
+    } catch {
+      /* 目录不存在等，忽略 */
+    }
   }
 
   /** GitHub Release → 下载页数据 */
@@ -404,7 +461,7 @@ export class ReleaseStore {
         "user-agent": "kuaiban-server",
         ...(this.githubToken ? { authorization: `Bearer ${this.githubToken}` } : {}),
       },
-      signal: AbortSignal.timeout(120_000), // 安装包几 MB，给足时间
+      signal: AbortSignal.timeout(300_000), // 国内从 GitHub 拉几 MB 实测要 100 秒以上，给足
     });
     if (!res.ok || !res.body) throw new Error(`回源失败：${res.status}`);
 

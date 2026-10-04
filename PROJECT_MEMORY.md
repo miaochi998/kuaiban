@@ -494,6 +494,61 @@ e2e 新增 6 个日历用例（原"日历不该能加"的用例已改写），�
 【CLI 的已知限制】`gh api /user` 取不到 `plan`（返回"未知"）、`/users/<u>/settings/billing/actions` 返回 404 且提示需要 `user` scope —— **本机 gh token 的 scopes 是 gist/read:org/repo/workflow，查不了套餐与 Actions 额度**。若以后要排查"额度耗尽导致 queued"，需要 `gh auth refresh -h github.com -s user`。
 
 【本轮结论】先把 macOS 跑完并验证下载页/自动更新链路；Windows 待拿到日志后单独修。全仓 568 个测试。
+- [2026-10-04 13:50] [工作记录] CI 三次失败根因与修复：脚本改独立文件、本地先验证（b9d0936） — commit b9d0936。CI 连续三次失败后定位到**全部是 shell/YAML 层面的自造 bug**，已改法并本地验证。第 4 次运行（run 37180989052）已触发，**结果未验证**。
+
+【三次失败的真实根因（都很有代表性，务必复用）】
+1. **`pnpm/action-setup` 与 `package.json` 同时指定版本** → 直接失败。版本只留 `packageManager` 一个来源。（已在上轮修）
+2. **`macos-13` runner 标签已被 GitHub 淘汰** → job 永久 queued（看起来像"在跑"）。改 `macos-15-intel` 立即恢复。（已在上轮修）
+3. **`sed "0,/^version = /s//version = \"V\"/"` 的 `s//repl/` 只替换匹配到的那一小段**（`version = `），**旧版本号会留在后面**，写出 `version = "0.1.1""0.1.1"` → Cargo 报 `TOML parse error at line 3, column 18`。（Windows 挂在这）
+4. **`[ -z "$arch" ] && arch="x64"` 在条件为假时返回 1** → 被 GitHub Actions 默认的 `set -e` 终止脚本。（Apple 芯片挂在这）
+5. **把 node 脚本内联写在 YAML 的 `run:` 里** → YAML→shell→node **三层转义叠加**，正则 `\d` 变成 `\\d`，导致 "0.1.1" 被判非法版本号，**三个平台全挂**。**靠 GitHub 日志会打印脚本原文才定位到。**
+
+【最终解法（已落地）】CI 脚本一律**放独立文件**，workflow 里只留 `run: node scripts/xxx.mjs`：
+- `scripts/ci-set-version.mjs` —— 同步版本号进 tauri.conf.json 与 Cargo.toml（用 node 而非 sed）
+- `scripts/ci-rename-updater-artifacts.mjs` —— 把架构写进 macOS 更新包文件名（用 node 而非 shell 条件赋值）
+**两个脚本已在本机跑通验证**：输出"版本已同步为 0.1.1"、以及重命名产出 `KuaiBan_x64.app.tar.gz` 与 `.sig`。
+
+【工作方法教训（本轮最大收获）】**凡是写在 CI/YAML/shell 里的逻辑，提交前必须先在本地跑一遍** —— 这三次失败没有一个是业务逻辑问题，全是可本地验证的胶水代码问题；本地跑一次就能全部避免。
+
+【诊断命令备忘】`gh run view <id> --json jobs -q '.jobs[] | "\(.name): \(.status) \(.conclusion)"'`；取失败步骤：`--json jobs -q '.jobs[] | select(.conclusion=="failure") | .steps[] | select(.conclusion=="failure") | .name'`；取 job 日志：先 `--json jobs -q '.jobs[] | select(.name|test("Windows")) | .databaseId'` 再 `gh run view --job <jobid> --log`（**run 未结束时不可用**）。
+
+【下一步（待验证）】盯 run 37180989052：若通过会自动创建 GitHub Release `v0.1.1`，下载页随之出现 macOS 安装包，可进而验证客户端自动更新整条链路。Windows 因无 CI 环境尚未单独验证过。全仓 568 个测试。
+- [2026-10-04 13:51] [工作记录] 与运维的状态对齐：Stack 已部署、镜像地址交付、指出 .10 UFW 缺口 — 本轮为状态对齐与给运维 AI 的回复准备，无代码改动。
+
+【运维侧已完成（用户转述运维 AI 报告）】1) `.6` 建 `/opt/kuaiban/data`（uid 1000，分区剩 918G）✅；2) `.6` UFW 放行 6522（收紧版：仅 `192.168.2.0/24` + `47.105.64.102`）✅；3) **两台都已把 `/opt/kuaiban/data` 纳入每日备份** ✅ —— 运维做得很谨慎：给 `server-backup.sh` 加「应用数据目录」备份节、两台各建回滚点 `server-backup.sh.bak-20261004`、做了三层验证（隔离单测 / 端到端跑一遍且落点改到临时目录不碰真实备份目录 / 确认真实备份目录未被触碰）、两台脚本 md5 一致。**⚠️ `.10` 生产机下一次备份是今晚 02:00，是新脚本在生产上的首次运行，运维明日核对。** 4) 待办：爱快映射、阿里云 NPM Proxy Host + 证书。
+
+【⚠️ 关键状态不一致（已指出）】**运维以为 Stack 还没部署（其待办把".10 建目录 + 部署生产"列为第二阶段），但我已经全部部署完成**：`kuaiban-test`（.6）与 `kuaiban-production`（.10），**Stack ID 均为 5**；`.10` 的数据目录也已由我用一次性容器补建（运维只建了 `.6`）；两台自检 `{"ok":true}`，`.10` 的 `/` 返回 HTTP 200。
+
+【⚠️ 运维计划里漏掉的缺口】UFW **只在 `.6` 放行了 6522**；若路由器映射指向 `.10`，**必须在 `.10` 也放行 6522/tcp**（来源同样限 `192.168.2.0/24` + `47.105.64.102`），否则外网访问失败。已提醒。
+
+【已交付给运维的信息（完整镜像地址 + tag）】`miaochi/kuaiban-server:0.1.1` 与 `:latest`（同一 digest）。已写好一段可直接转发的回复，含：状态同步、两台 Stack 名与 ID、自检结果、要求做的两件事（爱快映射 `16522 → 192.168.2.10:6522`；NPM Proxy Host 配置含 `client_max_body_size 200m;`）、必须补的 UFW 缺口、以及"签名私钥不在服务器上（签名在 CI 完成）故备份压力小"的说明。
+
+【待用户拍板的分歧】运维原计划 `16522 → .6`（先测试）→ 验证后切 `.10`；但用户此前明确"测试服务器不用域名，只用 IP 访问"。我建议**直接指 `.10`**（两台均已就绪，少一次切换；测试机走内网 IP 验证足够）。**用户尚未答复。**
+
+【CI 状态】run 37180989052 进行中，三个平台（macOS Apple 芯片 / macOS Intel / Windows）**均已越过此前失败的版本同步步骤**，进入正常构建 ✅。结果尚未验证。
+
+【本轮无新增经验教训可沉淀（CI 胶水代码五条铁律已在上轮记录）。】
+- [2026-10-04 14:09] [工作记录] CI 全平台成功并发布 v0.1.1；决策改保守方案；发现 compose 变量引用缺失与 token 失效 — **CI 编译全部成功**（run 37180989052，commit b9d0936）：macOS Apple 芯片 / macOS Intel / Windows / 发 Release 四个 job **全 success**，耗时 18m1s。GitHub Release **v0.1.1 已发布**，产物 10 项：`KuaiBan_0.1.1_aarch64.dmg`(3.1MB)、`KuaiBan_0.1.1_x64.dmg`(3.32MB)、`KuaiBan_0.1.1_x64-setup.exe`(2.49MB)、`KuaiBan_0.1.1_x64_en-US.msi`(3.29MB)、`KuaiBan_aarch64.app.tar.gz`+`.sig`、`KuaiBan_x64.app.tar.gz`+`.sig` 等。**架构重命名步骤生效**（更新包文件名带 aarch64/x64），说明服务端能正确区分芯片。
+
+【用户决策：采用保守方案（方案二）】域名先指向**测试机 `.6`**（`16522 → 192.168.2.6:6522`），验证通过后再切 `.10`。理由：**本项目会持续迭代升级，坚持"测试机先行验证、没问题再升生产"的流程是必要的**。→ 运维回复已按此更新；`.10` 的 UFW 放行 6522 需在"切生产前"补做。
+
+【⚠️ 本轮发现的两个真问题】
+1. **compose 未引用 `KUAIBAN_GITHUB_REPO` / `KUAIBAN_GITHUB_TOKEN`** → Portainer 的 Stack 环境变量**只用于 compose 变量替换**，没在 compose 里写 `${VAR}` 的地方，变量不会进容器。已补上这两行并更新两个 Stack（PUT `/api/stacks/5?endpointId=1`）。（此后实测容器 env 与启动日志均已正确显示"客户端版本跟随 GitHub Release"。）
+2. **用户提供的 GitHub 只读 token 已失效（401 Bad credentials）** —— 10:20 时实测可用（读 200 / 写 403），约 14:00 再测即失效，**推测是用户后来删除或重新生成了该 token**。已在**本机与容器内**双重验证均为 401；对照 `gh` CLI 自身凭据正常（能读到 v0.1.1 及 10 个 asset）。该 token 同时写入过两台 Stack 的环境变量，故两台都拿不到版本信息、**下载页与自动更新清单暂时为空**。**已请用户重新生成只读 token（Repository access = Only select repositories → miaochi998/kuaiban；Permissions = Contents: Read-only），拿到后我会更新两台 Stack 并验证整条链路。**
+
+【当前状态】镜像 ✅ 已推（`miaochi/kuaiban-server:0.1.1`，104.6MB linux/amd64）；两台 Stack ✅ 已部署且健康；客户端安装包 ✅ CI 构建成功、Release 已发布；**下载页/自动更新 ⏳ 等新 token**；外网链路 ⏳ 等运维（方案二先指 `.6`）。
+
+【已交付用户一段可直接转发运维的回复】含：完整镜像地址+tag、两台 Stack 名与 ID（均 5）、自检结果、Release 已就绪、方案二的映射要求、NPM 配置（含 `client_max_body_size 200m;`）、`.10` UFW 缺口提醒、以及"签名私钥不在服务器上故备份压力小"的说明。
+- [2026-10-04 14:13] [工作记录] token 失效查证：非泄露、系到期时间设得太短；待补管理后台失效提示 — 【已查证：GitHub token 失效的原因不是泄露】用户发来 GitHub token 设置页截图，页面明确显示 **"⚠️ This token has expired"**（Created today）。我做了两项查证：
+1. **Git check**：`git log --all -p | grep <token前缀>` 结果为空 → **token 从未进入任何提交**；工作区内唯一含它的文件是 `apps/server/.env.local`，且 `git check-ignore` 确认已忽略。**结论：不是 GitHub 密钥扫描吊销，也不是本项目泄露。**
+2. **推测原因**：生成时 `Expiration` 虽显示 "No expiration"，但实际生效的是很短的到期时间（或事后被改），导致当天即失效。
+**修法（已告知用户）**：点设置页的 **`Regenerate token`** 按钮重新生成（权限设置 `${仓库} + Read access to code and metadata` 会沿用，无需重配），**务必把 Expiration 设为 `No expiration` 或至少 1 年**，再把新值发来。
+
+【定位手法（可复用）】判定"凭据失效"而非"网络不通/代码 bug"，用**三点对照**：同一 token 在①本机 ②目标容器内 均返回 `401 Bad credentials`，而③另一条已知可用凭据（`gh` CLI 自身）能正常读到 Release → 即可判定为凭据问题。
+
+【已向用户承诺的改进（待做）】**token 失效时下载页只是静默空掉、看不出原因**。计划在管理后台增加明确提示（如"GitHub 凭据已失效，请更新"），让后续同类问题一眼可辨、不必再靠排查。**已约定等新 token 到位、链路验证通过后再改，以免打断当前流程。**
+
+【当前状态】镜像 ✅ 已推（`miaochi/kuaiban-server:0.1.1`）；两台 Stack ✅ 已部署健康；客户端安装包 ✅ CI 全平台成功、Release v0.1.1 已发布（10 个产物）；**下载页/自动更新 ⏳ 等新 token**；外网链路 ⏳ 等运维（用户已定**保守方案二**：域名先指测试机 `.6`，验证后再切 `.10`；`.10` 的 UFW 放行 6522 需在切生产前补做）。全仓 568 个测试。
 
 ## 经验教训 Lessons Learned
 
@@ -654,6 +709,14 @@ unsafe { let w = ptr as *mut AnyObject; let _: () = msg_send![w, setAcceptsMouse
 2) **GitHub Actions 里 job 长时间停留在 `queued`，几乎总是该 runner 标签已被下线或账号额度不足**，而不是"任务在排队"。本项目 `macos-13`（已退役）就表现为永久 queued；换成 `macos-15-intel` 立即开始。**排查时不要把它当成"还在跑"。**
 3) **GitHub 在 workflow run 进行中不提供日志**（`gh run view --job <id> --log` 会提示 logs will be available when it is complete）。要定位某 job 的失败原因，只能等整个 run 结束；期间可用 `--json jobs` 看各 job 状态与**失败的具体步骤名**缩小范围。
 4) 用 `gh` 排查账号套餐/Actions 额度需要 `user` scope；默认的 `repo`/`workflow` scope 查不到（`/user` 的 plan 字段为空、billing 接口 404）。
+- [2026-10-04 13:50] [经验教训] CI 胶水代码五条铁律：不内联脚本、不用 sed 改配置、set -e 陷阱、本地先跑、queued 即失效 — 1) **绝不要把 node/python 脚本内联写在 CI 的 `run:` 里**。YAML → shell → 解释器三层转义会叠加，正则 `\d` 会变成 `\\d` 从而静默改变语义（本项目导致"0.1.1"被判非法版本号，三个平台全挂）。**放独立脚本文件，CI 里只写 `run: node scripts/xxx.mjs`。** 定位这类问题靠"CI 日志会把 run 的脚本文本打印出来"。
+2) **不要用 `sed` 修改结构化配置**（Cargo.toml / JSON 等）。`sed "0,/^key = /s//key = \"v\"/"` 的 `s//repl/` **只替换匹配到的那一小段**，原值会残留在后面，写出 `version = "1""1"` 这种坏文件。用对应语言的解析器或整行正则替换。
+3) **`set -e` 下禁止用 `[ cond ] && action` 做条件赋值**：条件为假时整个表达式返回 1，脚本会被直接终止。用 `if` 语句或 `x="${x:-default}"`。
+4) **CI 里的胶水代码必须在本地跑一遍再提交**。本项目 CI 连续三次失败，根因没有一个是业务逻辑问题，全是 shell/YAML 胶水问题，本地各跑一次即可全部避免。
+5) **GitHub Actions job 长时间 `queued` 就是 runner 标签已下线或额度不足**，别当成"还在跑"（`macos-13` 已退役，应用 `macos-15-intel`）。
+- [2026-10-04 14:10] [经验教训] Portainer 环境变量必须在 compose 里引用；凭据失效的双重验证法；交付文本需整段重发 — 1) **Portainer 的 Stack 环境变量只用于 compose 的变量替换**：只有在 compose 文件里写了 `${VAR}` 的地方，该变量才会被传进容器。只在 Portainer 面板里添加变量、而 compose 里没引用它，容器**拿不到**——表现是"配置看起来填了但程序读不到"，且日志上完全看不出问题。新增任何服务端环境变量时，**必须同时在 compose 的 `environment:` 里显式引用**。
+2) **用户给的凭据可能在其后续操作中失效**。本轮用户的 GitHub 只读 token 从"实测可用"变为"401 Bad credentials"（疑似用户自行删除/重新生成）。排查手法：在本机与目标容器内**双重验证**，并用另一条已知可用的凭据（如 `gh` CLI 自身）做对照，即可判定是"token 失效"而非"网络不通"或"代码 bug"。
+3) **给运维/用户的操作说明要随状态变化重新出具**：用户明确说"回复信息有变的话需要你重新给我回复信息"。凡是交付了"可直接转发"的文本，一旦前置状态改变（如改选保守方案、Stack 实际已部署），必须**整段重发**而不是增量补充，避免对方照旧信息执行。
 
 ## 行动指南 Action Guide
 

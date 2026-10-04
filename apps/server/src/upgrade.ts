@@ -191,14 +191,33 @@ export async function applyUpgrade(opts: {
 
   try {
     // 1) 读当前堆栈
+    //
+    // ⚠️ 注意这里要**两个**请求：
+    // `/api/stacks/{id}` 只返回元数据，**不含 compose 内容**；
+    // compose 内容要单独调 `/api/stacks/{id}/file`。
+    // 一开始只调了前者，拿到空的 StackFileContent 就 PUT 回去，
+    // Portainer 报 `400 Invalid request payload: Invalid stack file content`
+    // —— 这个错只有在真实 Portainer 上才会暴露，单元测试的假 fetch 发现不了。
     const current = await doFetch(stackUrl, { headers, signal: AbortSignal.timeout(15_000) });
     if (!current.ok) {
       return { ok: false, message: `读 Portainer 堆栈失败（HTTP ${current.status}）` };
     }
     const stack = (await current.json()) as {
-      StackFileContent?: string;
       Env?: { name: string; value: string }[];
     };
+
+    const fileRes = await doFetch(`${base}/api/stacks/${env.stackId}/file?endpointId=${env.endpointId}`, {
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!fileRes.ok) {
+      return { ok: false, message: `读堆栈的 compose 内容失败（HTTP ${fileRes.status}）` };
+    }
+    const file = (await fileRes.json()) as { StackFileContent?: string };
+    const stackFileContent = file.StackFileContent ?? "";
+    if (!stackFileContent.trim()) {
+      return { ok: false, message: "Portainer 返回的 compose 内容是空的，为安全起见没有继续" };
+    }
 
     // 2) 换镜像版本（已有该项就改，没有就加）
     const nextImage = `${opts.imageName}:${opts.version}`;
@@ -213,7 +232,7 @@ export async function applyUpgrade(opts: {
       headers,
       signal: AbortSignal.timeout(60_000),
       body: JSON.stringify({
-        stackFileContent: stack.StackFileContent ?? "",
+        stackFileContent,
         env: envList,
         prune: false,
         pullImage: true,
