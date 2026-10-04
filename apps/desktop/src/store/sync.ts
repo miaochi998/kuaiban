@@ -204,10 +204,18 @@ export async function syncNow(): Promise<void> {
     saveState(user.id);
     lastSyncedAt.value = new Date().toISOString();
 
+    // 出问题不能静默。被拒和"读不出来"是两件事，可能同时发生，所以拼在一起说。
+    const notices: string[] = [];
     if (result.rejected.length > 0) {
-      // 被拒不能静默：告诉用户有几条没能上传
-      lastError.value = `有 ${result.rejected.length} 条没能上传（${result.rejected[0]!.reason}）`;
+      notices.push(`有 ${result.rejected.length} 条没能上传（${result.rejected[0]!.reason}）`);
     }
+    // 服务端有读不出来的记录（字段不全、版本不兼容等）。
+    // 这些会被跳过、**不影响其他记录同步**，但用户有权知道少了东西 ——
+    // 静默消失比报错更难排查。
+    if (result.broken.length > 0) {
+      notices.push(`有 ${result.broken.length} 条数据读不出来，已跳过（${result.broken[0]!.reason}）`);
+    }
+    if (notices.length > 0) lastError.value = notices.join("；");
   } catch (err) {
     lastError.value = err instanceof Error ? err.message : "同步失败";
   } finally {
