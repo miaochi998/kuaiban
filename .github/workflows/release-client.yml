@@ -166,6 +166,13 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+          # ⚠️ **必须限定只下载我们的产物**。
+          # `docker/build-push-action` 的 `cache-to: type=gha` 会额外产生一个
+          # `<repo>~<branch>~<id>.dockerbuild` 缓存产物；不加过滤就会把它
+          # 也当发布产物下载，解压失败 →
+          # "Unable to download and extract artifact: Artifact download failed after 5 retries"。
+          # 而这个报错看起来像网络问题，很容易误判成偶发失败去重跑。
+          pattern: bundle-*
 
       - name: 列出要发的文件（出问题时一眼看得出缺了什么）
         run: ls -la artifacts
