@@ -164,6 +164,36 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: 服务端独立发版时，也建一个 Release（不含客户端产物）
+        # 为什么需要：后台的「检查更新」要有权威版本来源。
+        # 本机访问不了 hub.docker.com（运维实测直连 registry 超时、靠加速器），
+        # 所以读镜像 tag 那条路走不通；GitHub 可达，就让它作为版本记录。
+        #
+        # 这个 Release 里**没有**客户端安装包，因此：
+        #   下载页与客户端的更新清单会**跳过它**、去找带客户端产物的那个
+        #   （见 fetchLatestRelease 的 withClientAssets 过滤）。
+        if: ${{ inputs.server_only == true }}
+        continue-on-error: true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.v.outputs.VERSION }}
+          name: v${{ steps.v.outputs.VERSION }}（仅服务端）
+          body: |
+            本次只发布了**服务端镜像**，客户端无变化。
+
+            镜像：`${{ secrets.DOCKER_HUB_USERNAME }}/kuaiban-server:${{ steps.v.outputs.VERSION }}`
+          draft: false
+          prerelease: false
+
+      - name: 通知服务器开始预热客户端安装包
+        # 预热是"发现新版本后把安装包拉到本地"。不主动催的话，
+        # 要等下一次有人访问才开始 —— 这期间第一个点下载的同事
+        # 得等服务器从 GitHub 取完（实测 40 秒以上）。
+        # 失败不影响发版（服务端自己也有定时刷新兜底）。
+        continue-on-error: true
+        run: |
+          curl -sS -X POST --max-time 20 https://kuaiban.bonnei.com/api/refresh || true
+
   release:
     if: ${{ github.event_name == 'push' || inputs.server_only != true }}
     name: 发 Release
