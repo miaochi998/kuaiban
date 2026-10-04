@@ -552,3 +552,60 @@ describe("runSync 同步循环", () => {
     expect(a.cursor).toBe(cursor); // 没有新东西，游标不动
   });
 });
+
+describe("坏载荷不能拖垮整次同步", () => {
+  const good = {
+    id: "ok-1",
+    title: "正经待办",
+    date: null,
+    time: null,
+    status: "pending",
+    repeat: null,
+    lastDoneDate: null,
+    skippedDates: [],
+    remind: false,
+    remindBefore: 0,
+    note: "",
+    completedAt: null,
+    createdAt: "2026-10-04T00:00:00.000Z",
+    updatedAt: "2026-10-04T00:00:00.000Z",
+    deletedAt: null,
+  };
+
+  it("字段不全的记录被隔离，好的照常同步", () => {
+    const result = decodePull([
+      { id: "ok-1", payload: JSON.stringify(good), updatedAt: good.updatedAt, deletedAt: null, seq: 1 },
+      // 这就是真机上出问题的那种：能解析、但缺 status —— 落库会撞非空约束
+      { id: "bad-1", payload: JSON.stringify({ title: "缺字段" }), updatedAt: "x", deletedAt: null, seq: 2 },
+    ]);
+
+    expect(result.todos.map((t) => t.id)).toEqual(["ok-1"]);
+    expect(result.broken).toHaveLength(1);
+    expect(result.broken[0]!.id).toBe("bad-1");
+    expect(result.broken[0]!.reason).toContain("status");
+  });
+
+  it("老版本载荷缺可选字段时给默认值，不整条丢弃", () => {
+    const legacy = { id: "old-1", title: "老数据", status: "pending", repeat: null,
+      createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" };
+
+    const result = decodePull([
+      { id: "old-1", payload: JSON.stringify(legacy), updatedAt: legacy.updatedAt, deletedAt: null, seq: 1 },
+    ]);
+
+    expect(result.todos).toHaveLength(1);
+    expect(result.todos[0]!.skippedDates).toEqual([]);
+    expect(result.todos[0]!.remind).toBe(false);
+    expect(result.todos[0]!.note).toBe("");
+    expect(result.broken).toHaveLength(0);
+  });
+
+  it("完全不是对象的载荷也拦得住", () => {
+    const result = decodePull([
+      { id: "bad-2", payload: JSON.stringify([1, 2, 3]), updatedAt: "x", deletedAt: null, seq: 1 },
+      { id: "bad-3", payload: "null", updatedAt: "x", deletedAt: null, seq: 2 },
+    ]);
+    expect(result.todos).toHaveLength(0);
+    expect(result.broken).toHaveLength(2);
+  });
+});

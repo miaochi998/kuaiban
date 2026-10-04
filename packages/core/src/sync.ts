@@ -348,6 +348,53 @@ export function planPush(
  * 或密钥换了导致解不开）不应该让用户所有的数据都同步不了。
  * 失败的记进 `broken`，由调用方决定是提示用户还是忽略。
  */
+/**
+ * 校验一条载荷能不能落库。
+ *
+ * ## 为什么要校验
+ *
+ * 原来的 `decode` 只是 `JSON.parse(payload) as Todo` —— **只解析、不校验**。
+ * 于是一条**解析得动但字段不全**的载荷会一路走到写库，撞上 SQLite 的
+ * 非空约束（`todos.status` 等），而批量写是**一个事务**，
+ * **一条坏数据就把整次同步干掉了**，用户看到的是数据库原始报错。
+ *
+ * 这个坑在"手工造数据"时先暴露出来，但它真正会咬人的场合是**版本迭代**：
+ * 改了字段之后，老客户端遇到新格式（或反过来）就是同样的结果。
+ *
+ * 所以在这里挡住：**缺必填字段的丢掉并记进 `broken`，好的照常同步**。
+ * 对可选项则尽量给默认值 —— 宁可少丢一条，也不要因为一个字段没给就整条不要。
+ */
+function normalizeTodo(raw: unknown): Todo {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error("载荷不是对象");
+  }
+  const t = raw as Record<string, unknown>;
+
+  // 这几个是数据库的非空列，缺了必然写不进去 —— 直接判定为坏数据。
+  // 刻意**不**要求 `id`：id 由服务端元数据提供（下面会用 record.id 覆盖），
+  // 载荷里没有它是正常的，拿它当必填会误杀正常记录。
+  for (const key of ["title", "status", "createdAt", "updatedAt"] as const) {
+    if (typeof t[key] !== "string" || (t[key] as string).length === 0) {
+      throw new Error(`缺少字段 ${key}`);
+    }
+  }
+  if (t.repeat === undefined) throw new Error("缺少字段 repeat");
+
+  return {
+    ...(t as unknown as Todo),
+    // 以下给默认值：老版本载荷可能没有这些字段，不该因此整条丢弃
+    date: typeof t.date === "string" ? t.date : null,
+    time: typeof t.time === "string" ? t.time : null,
+    lastDoneDate: typeof t.lastDoneDate === "string" ? t.lastDoneDate : null,
+    skippedDates: Array.isArray(t.skippedDates) ? (t.skippedDates as string[]) : [],
+    remind: typeof t.remind === "boolean" ? t.remind : false,
+    remindBefore: typeof t.remindBefore === "number" ? t.remindBefore : 0,
+    note: typeof t.note === "string" ? t.note : "",
+    completedAt: typeof t.completedAt === "string" ? t.completedAt : null,
+    deletedAt: typeof t.deletedAt === "string" ? t.deletedAt : null,
+  };
+}
+
 export function decodePull(
   records: readonly SyncRecord[],
   codec: TodoCodec = plaintextCodec,
@@ -357,7 +404,7 @@ export function decodePull(
 
   for (const record of records) {
     try {
-      const todo = codec.decode(record.payload);
+      const todo = normalizeTodo(codec.decode(record.payload));
       // 服务端的元数据是权威的：id / 删除标记以服务端为准，
       // 免得客户端伪造出一个和 id 对不上的载荷
       todos.push({ ...todo, id: record.id, deletedAt: record.deletedAt });
