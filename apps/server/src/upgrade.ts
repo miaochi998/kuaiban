@@ -24,7 +24,7 @@
  * 不经过聊天。页面回显时只给"已配置/未配置"，**绝不把 Key 发回浏览器**。
  */
 
-import { fetchLatestRelease } from "./github-releases.ts";
+import { fetchNewestRelease } from "./github-releases.ts";
 import { compareVersion as cmpTag, fetchImageTags, pickLatestVersion } from "./docker-hub.ts";
 import type { Store } from "./store.ts";
 
@@ -190,7 +190,9 @@ export async function checkServerUpdate(opts: {
     return { current: opts.currentVersion, latest: null, hasUpdate: false, error: `读不到镜像 ${image} 的 tag，也没配 GitHub 仓库` };
   }
 
-  const release = await fetchLatestRelease({
+  // 用 fetchNewestRelease 而不是 fetchLatestRelease ——
+  // 服务端"只发镜像"时建的 Release **不含客户端产物**，用后者会漏看它。
+  const release = await fetchNewestRelease({
     repo,
     ...(opts.config.githubToken || process.env.KUAIBAN_GITHUB_TOKEN
       ? { token: opts.config.githubToken || process.env.KUAIBAN_GITHUB_TOKEN }

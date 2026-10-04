@@ -6,7 +6,13 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { fetchLatestRelease, macosArch, platformOf } from "../src/github-releases.ts";
+import {
+  fetchLatestRelease,
+  fetchNewestRelease,
+  hasClientAssets,
+  macosArch,
+  platformOf,
+} from "../src/github-releases.ts";
 
 describe("认识哪些安装包", () => {
   it("dmg / exe / msi / apk 都认得", () => {
@@ -45,8 +51,11 @@ describe("读 GitHub Release", () => {
     ],
   };
 
+  // GitHub 的 /releases 返回的是**数组**（原来用 /releases/latest 返回单个对象）。
+  // 现在为了能"跳过不含客户端产物的空壳 Release"，改成了列表接口。
   function fakeFetch(body: unknown, status = 200) {
-    return vi.fn(async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
+    const payload = Array.isArray(body) ? body : [body];
+    return vi.fn(async () => new Response(JSON.stringify(payload), { status })) as unknown as typeof fetch;
   }
 
   it("正常读出来，版本号去掉 v 前缀", async () => {
@@ -73,5 +82,49 @@ describe("读 GitHub Release", () => {
 
   it("仓库名格式不对直接返回 null", async () => {
     expect(await fetchLatestRelease({ repo: "不是仓库名" })).toBeNull();
+  });
+});
+
+describe("区分「客户端发布」与「服务端专用发布」", () => {
+  const clientRelease = {
+    tag_name: "v0.1.10",
+    published_at: "2026-10-04T00:00:00Z",
+    body: "",
+    assets: [
+      { name: "KuaiBan_0.1.10_aarch64.dmg", url: "https://api.github.com/a/1", browser_download_url: "x", size: 100 },
+    ],
+  };
+  // 服务端专用发布：只建 Release 记版本，**不含客户端安装包**
+  const serverOnlyRelease = {
+    tag_name: "v0.1.11",
+    published_at: "2026-10-05T00:00:00Z",
+    body: "本次只发布服务端镜像",
+    assets: [],
+  };
+
+  function fakeList() {
+    // 最新的在前（GitHub 默认按发布时间倒序）
+    return vi.fn(async () =>
+      new Response(JSON.stringify([serverOnlyRelease, clientRelease]), { status: 200 }),
+    ) as unknown as typeof fetch;
+  }
+
+  it("下载页/更新清单要跳过空壳 Release，取带客户端产物的那个", async () => {
+    // 否则最新 Release 一变空壳，下载页和自动更新就全废了
+    const r = await fetchLatestRelease({ repo: "me/kb", fetchImpl: fakeList() });
+    expect(r?.version).toBe("0.1.10");
+  });
+
+  it("服务端版本检查要看到最新的那个（哪怕是空壳）", async () => {
+    const r = await fetchNewestRelease({ repo: "me/kb", fetchImpl: fakeList() });
+    expect(r?.version).toBe("0.1.11");
+  });
+
+  it("hasClientAssets 认得各种客户端产物", () => {
+    expect(hasClientAssets([{ name: "KuaiBan_0.1.1_aarch64.dmg" }])).toBe(true);
+    expect(hasClientAssets([{ name: "KuaiBan_0.1.1_x64-setup.exe" }])).toBe(true);
+    expect(hasClientAssets([{ name: "KuaiBan_aarch64.app.tar.gz" }])).toBe(true);
+    expect(hasClientAssets([{ name: "KuaiBan_aarch64.app.tar.gz.sig" }])).toBe(false);
+    expect(hasClientAssets([])).toBe(false);
   });
 });

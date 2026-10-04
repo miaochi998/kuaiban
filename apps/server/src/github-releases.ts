@@ -64,6 +64,18 @@ export interface GithubRelease {
 /** GitHub 请求超时。内网服务器出海可能不快，但也不能一直挂着 */
 const TIMEOUT_MS = 8_000;
 
+/**
+ * 这个 Release 里有没有**客户端安装包**。
+ *
+ * 用途很关键：服务端可以"只发镜像"（`server_only`），那种版本也会建一个
+ * Release，但**不含客户端产物**。而下载页与客户端的更新清单必须看
+ * **带客户端产物的那个 Release** —— 否则最新 Release 一变空壳，
+ * 下载页和自动更新就全废了。
+ */
+export function hasClientAssets(assets: readonly { name: string }[]): boolean {
+  return assets.some((a) => /\.(dmg|exe|msi|apk|app\.tar\.gz|nsis\.zip)$/i.test(a.name));
+}
+
 function parseRepo(repo: string): { owner: string; name: string } | null {
   const m = /^([^/]+)\/([^/]+)$/.exec(repo.trim());
   return m ? { owner: m[1]!, name: m[2]! } : null;
@@ -75,13 +87,21 @@ function parseRepo(repo: string): { owner: string; name: string } | null {
  * `token` 可选：仓库是私有的就必须给（只读权限的 token 即可）。
  * 注意**不要把 token 写进代码或镜像** —— 从环境变量来。
  */
-export async function fetchLatestRelease(opts: {
+/**
+ * 读 Release 列表（按发布时间倒序，GitHub 默认如此）。
+ *
+ * `withClientAssets` 为真时，**只挑第一个含客户端产物的** ——
+ * 这样"服务端专用 Release"（空壳）不会把下载页和自动更新打空。
+ */
+export async function fetchReleases(opts: {
   repo: string;
   token?: string | undefined;
   fetchImpl?: typeof fetch;
-}): Promise<GithubRelease | null> {
+  withClientAssets?: boolean;
+  limit?: number;
+}): Promise<GithubRelease[]> {
   const parsed = parseRepo(opts.repo);
-  if (!parsed) return null;
+  if (!parsed) return [];
 
   const doFetch = opts.fetchImpl ?? fetch;
   const controller = new AbortController();
@@ -89,7 +109,7 @@ export async function fetchLatestRelease(opts: {
 
   try {
     const res = await doFetch(
-      `https://api.github.com/repos/${parsed.owner}/${parsed.name}/releases/latest`,
+      `https://api.github.com/repos/${parsed.owner}/${parsed.name}/releases?per_page=${opts.limit ?? 20}`,
       {
         signal: controller.signal,
         headers: {
@@ -101,37 +121,72 @@ export async function fetchLatestRelease(opts: {
       },
     );
 
-    if (!res.ok) return null;
+    if (!res.ok) return [];
 
-    const json = (await res.json()) as {
+    const list = (await res.json()) as {
       tag_name?: string;
       published_at?: string;
       body?: string;
+      draft?: boolean;
       assets?: { name: string; url: string; browser_download_url: string; size: number }[];
-    };
+    }[];
 
-    // tag 形如 v0.1.2 —— 版本号不带 v
-    const version = (json.tag_name ?? "").replace(/^v/, "");
-    if (!version) return null;
+    const out: GithubRelease[] = [];
+    for (const json of Array.isArray(list) ? list : []) {
+      if (json.draft) continue;
+      // tag 形如 v0.1.2 —— 版本号不带 v
+      const version = (json.tag_name ?? "").replace(/^v/, "");
+      if (!version) continue;
 
-    return {
-      version,
-      publishedAt: json.published_at ?? new Date().toISOString(),
-      notes: json.body ?? "",
-      assets: (json.assets ?? []).map((a) => ({
+      const assets = (json.assets ?? []).map((a) => ({
         name: a.name,
         apiUrl: a.url, // api.github.com/…/releases/assets/<id>
         browserUrl: a.browser_download_url,
         size: a.size,
-      })),
-    };
+      }));
+      if (opts.withClientAssets && !hasClientAssets(assets)) continue;
+
+      out.push({
+        version,
+        publishedAt: json.published_at ?? new Date().toISOString(),
+        notes: json.body ?? "",
+        assets,
+      });
+    }
+    return out;
   } catch {
     // 网络不通、GitHub 挂了、被限流 —— 一律当作"暂时拿不到"，
     // 让调用方退回上一次成功的结果，而不是把下载页搞成报错页
-    return null;
+    return [];
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * 最新的、**含客户端产物的** Release —— 下载页与自动更新清单用它。
+ * （服务端专用 Release 是空壳，不能被它选到。）
+ */
+export async function fetchLatestRelease(opts: {
+  repo: string;
+  token?: string | undefined;
+  fetchImpl?: typeof fetch;
+}): Promise<GithubRelease | null> {
+  const list = await fetchReleases({ ...opts, withClientAssets: true, limit: 20 });
+  return list[0] ?? null;
+}
+
+/**
+ * 最新的 Release（不论有没有客户端产物）—— **服务端版本检查**用它。
+ * 服务端只发镜像时也会建 Release，那种版本必须能被看见。
+ */
+export async function fetchNewestRelease(opts: {
+  repo: string;
+  token?: string | undefined;
+  fetchImpl?: typeof fetch;
+}): Promise<GithubRelease | null> {
+  const list = await fetchReleases({ ...opts, limit: 10 });
+  return list[0] ?? null;
 }
 
 /** 某个资源属于哪个平台槽位（认不出来就返回 null） */

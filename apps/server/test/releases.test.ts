@@ -128,9 +128,9 @@ describe("下载地址必须指向本站，不能是 GitHub", () => {
     const original = globalThis.fetch;
     globalThis.fetch = (async (input: string | URL) => {
       const url = String(input);
-      if (url.includes("api.github.com")) {
+      if (url.includes("api.github.com") && url.includes("/releases")) {
         return new Response(
-          JSON.stringify({
+          JSON.stringify([{
             tag_name: "v0.1.2",
             published_at: "2026-10-04T00:00:00Z",
             body: "说明",
@@ -154,7 +154,7 @@ describe("下载地址必须指向本站，不能是 GitHub", () => {
                 size: 424,
               },
             ],
-          }),
+          }]),
           { status: 200 },
         );
       }
@@ -203,19 +203,21 @@ describe("签名缓存必须按版本隔离", () => {
     const original = globalThis.fetch;
     globalThis.fetch = (async (input: string | URL) => {
       const url = String(input);
-      if (url.includes("api.github.com") && url.includes("/releases/latest")) {
+      if (url.includes("api.github.com") && url.includes("/releases")) {
         return new Response(
-          JSON.stringify({
-            tag_name: `v${currentVersion}`,
-            published_at: "2026-10-04T00:00:00Z",
-            body: "",
-            assets: [
-              { name: "KuaiBan_aarch64.app.tar.gz", url: "https://api.github.com/a/1",
-                browser_download_url: "x", size: 100 },
-              { name: "KuaiBan_aarch64.app.tar.gz.sig", url: "https://api.github.com/a/2",
-                browser_download_url: "x", size: 10 },
-            ],
-          }),
+          JSON.stringify([
+            {
+              tag_name: `v${currentVersion}`,
+              published_at: "2026-10-04T00:00:00Z",
+              body: "",
+              assets: [
+                { name: "KuaiBan_aarch64.app.tar.gz", url: "https://api.github.com/a/1",
+                  browser_download_url: "x", size: 100 },
+                { name: "KuaiBan_aarch64.app.tar.gz.sig", url: "https://api.github.com/a/2",
+                  browser_download_url: "x", size: 10 },
+              ],
+            },
+          ]),
           { status: 200 },
         );
       }
@@ -258,7 +260,7 @@ describe("发新版本后不能继续发旧文件", () => {
     const original = globalThis.fetch;
     globalThis.fetch = (async (input: string | URL) => {
       const url = String(input);
-      if (url.includes("api.github.com")) return new Response(JSON.stringify(release), { status: 200 });
+      if (url.includes("api.github.com")) return new Response(JSON.stringify([release]), { status: 200 });
       return new Response(Buffer.alloc(2000), { status: 200 });
     }) as unknown as typeof fetch;
 
