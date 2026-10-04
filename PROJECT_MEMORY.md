@@ -458,6 +458,29 @@ e2e 新增 6 个日历用例（原"日历不该能加"的用例已改写），�
 【仅剩用户侧要做的（我不代劳）】1) **Portainer API Key ×2**（Portainer → My account → Access tokens，两台各一个）；2) **Stack ID ×2**（部署后从 URL 取）。**两项都在管理后台「Portainer 连接设置」里填，不要经聊天传递。** 另需用户执行：推镜像到 Docker Hub、按 `deploy/README.md` 在 Portainer 部署 Stack（先测试机）、打第一个 tag 验证自动发版。
 
 【已向用户提出、等待答复】是否要我代为本机构建并推送镜像到 Docker Hub（本机 Docker 可用）。
+- [2026-10-04 10:18] [工作记录] 运维部署硬性要求确认与 Compose 调整（94c0988） — commit 94c0988。**运维部署硬性要求（长期有效）**：1) 只能用 Portainer 的 **Stack** 方式部署，禁止 docker run 或脱离面板的裸 compose；2) 部署后必须能在面板里看到/启停/**重建（re-pull & redeploy）**/改环境变量；3) Stack 名固定：测试机 `kuaiban-test`（`192.168.2.6:9000`）、生产机 `kuaiban-production`（`192.168.2.10:9000`）；4) **部署后不要改容器名/项目名**（运维有因改名导致卷重建丢数据的前例）；5) 数据必须用**宿主机目录** `/opt/kuaiban/data`（不是命名卷）——此设计要保持。
+
+【本轮实测确认（一次性验证，令牌未写入任何文件）】两台 Portainer 访问令牌（描述名均 `kuaiban-upgrade`、永不过期）**均有效**：生产 `192.168.2.10:9000` → Endpoint ID **1**、名称 `prod-local`、在线；测试 `192.168.2.6:9000` → Endpoint ID **1**、名称 `testserver-local`、在线。`kuaiban-*` 的 **Stack 尚未创建**（两台各已有 4 个其他 Stack），**Stack ID 需部署后从面板 URL 获取**。验证方法：`curl -H "X-API-Key: <key>" http://<host>:9000/api/endpoints` 与 `/api/stacks`。
+
+【本轮代码/文档改动】1) `deploy/docker-compose.yml` 头部写入运维五条硬性要求；**去掉写死的 `container_name: kuaiban`**，让 Compose 按 Stack 名派生（`kuaiban-test-kuaiban-1` / `kuaiban-production-kuaiban-1`）——面板里一眼看出归属，且贴近运维既有命名风格（`7dl-prod-backend`）；数据在宿主机目录，改名不丢。2) `deploy/README.md` 增加「运维的硬性要求」对照表 + 本次实测确认段。3) `docs/部署-给运维AI的提示词.md` 增加「已确认信息」小节（Portainer 地址/Endpoint ID/Stack 名/令牌名/端口 6522/数据目录/DNS/测试机仅 IP 访问），避免重复询问。
+
+【用户已确认：测试机仅局域网 IP 访问，不做端口映射、不需要测试域名】**路由器映射直接指向正式机 `.10:6522`**。我此前提出的 `kuaiban-test.bonnei.com` 双域名方案**不再需要**。
+
+【下一步（唯一阻塞）】**镜像尚未推送到 Docker Hub**（`miaochi/kuaiban-server:0.1.1`），没有镜像 Stack 起不来。已向用户提出可否由我本机构建并推送（本机 Docker 可用、镜像构建此前已实测通过），等待答复。用户已表示 Docker Hub token 沿用既有那个、不作废。全仓 568 个测试。
+- [2026-10-04 10:26] [工作记录] 两台生产服务器部署上线成功（Stack ID 均为 5） — **快办两台生产服务器已全部部署上线（本轮由我全程操作，用户未手动配合）**：
+- 测试机 `192.168.2.6` → Stack `kuaiban-test`，**Stack ID = 5**，`http://192.168.2.6:6522/api/health` 返回 `{"ok":true}` ✅
+- 正式机 `192.168.2.10` → Stack `kuaiban-production`，**Stack ID = 5**（两台是独立 Portainer 实例，ID 可相同），`http://192.168.2.10:6522/api/health` ✅
+- 镜像：`miaochi/kuaiban-server:0.1.1` 与 `:latest` 已推 Docker Hub（**104.6MB，linux/amd64**）。用户选择**镜像公开**（方案 A）——意味着服务端 TypeScript 源码公开，用户已知悉并接受。
+
+【本轮踩到并解决的两个坑】**1) Portainer 2.27 建 Stack 的接口路径变了**：老写法 `POST /api/stacks?type=2&method=string&endpointId=1` 返回 **405**；正确写法是 **`POST /api/stacks/create/standalone/string?endpointId=1`**，body 为 `{name, stackFileContent, env:[{name,value}]}`。**2) 用一次性容器建宿主机目录时，创建容器不会自动拉镜像**（报 `No such image: alpine:3.20`）；改用服务器上**已存在**的镜像（`nginx:alpine`）即可，通过 `Entrypoint:["sh","-c"]` + `Cmd` 覆盖执行 `mkdir -p /h/data/releases && chown -R 1000:1000 /h/data`，`Binds:["/opt/kuaiban:/h"]`。
+
+【关键环境事实】数据目录 `/opt/kuaiban/data` **必须属主为 uid 1000**，否则容器内 node 用户写不了 SQLite；**Docker 对缺失的 bind mount 源目录会自动创建为 root**，所以必须显式预建。两台数据目录已由我用 Portainer 一次性容器建好（`1000:1000`）。
+
+【已完成的配置】快办管理后台「Portainer 连接设置」已在**正式机**写入并回读验证：两个环境（测试 `http://192.168.2.6:9000` / 正式 `http://192.168.2.10:9000`）、Stack ID 均为 5、Endpoint ID 均为 1、API Key 均已配置；**实测确认响应体里不含 `ptr_` 字样**（Key 不回显）。管理员账号 `admin`，初始密码随机生成存放于 `/tmp/kb-admin-pw.txt`（首次登录强制改密，改完应删除该文件）。两台服务器管理员密码相同。
+
+【已触发】`git push -f origin v0.1.1` → GitHub Actions「发布客户端」运行中（run id 37171004536），将构建 macOS（Apple 芯片+Intel）与 Windows 安装包并创建 Release。**尚未验证 CI 结果**（本轮结束时仍在跑）。
+
+【剩余待办】**三项均属运维（已在其待办清单内）**：1) UFW 放行 `6522/tcp`（来源限 `192.168.2.0/24` + `47.105.64.102`）；2) 路由器映射 外网 `16522` → `192.168.2.10:6522`；3) 阿里云 NPM 配 Proxy Host `kuaiban.bonnei.com` + Let's Encrypt 证书 + `client_max_body_size 200m;`。三项完成后 `https://kuaiban.bonnei.com` 即可用。另需：盯 CI 跑完并验证"下载页自动出现安装包 + 客户端自动更新"整条链路。全仓 568 个测试。
 
 ## 经验教训 Lessons Learned
 
@@ -610,6 +633,10 @@ unsafe { let w = ptr as *mut AnyObject; let _: () = msg_send![w, setAcceptsMouse
 2) **给浏览器的响应对象里绝不能含有凭据字段**，并且要**写测试断言"序列化后的整个响应里不出现该凭据字样"**——这比"我记得没返回它"可靠得多。适用于任何"凭据存在服务端、由管理员在页面配置"的场景。
 3) **重建容器类操作要主动确认数据落点**：数据若在 Docker 命名卷里，改名/重建有丢失历史（用户运维团队明确说过有应用因此丢过数据）；**用宿主机目录挂载则不受影响**。这也是"把一切需要备份的东西放同一个宿主目录"的又一个理由。
 4) **破坏性/高影响操作不做"一键全做"**：本项目服务端升级刻意只允许**选一个环境**升级，因为用户流程是"先在测试机验证再升生产"；"一键全升"会把安全步骤抹掉。凡是用户流程里存在人工验证环节的，界面就不该提供绕过它的入口。
+- [2026-10-04 10:26] [经验教训] Portainer Stack 创建路径变更、bind-mount 目录属主、一次性容器不自动拉镜像 — 1) **Portainer 2.x 版本间 REST 路径有破坏性变更**：创建独立 Stack 在 2.27 是 **`POST /api/stacks/create/standalone/string?endpointId=<id>`**（body `{name, stackFileContent, env:[{name,value}]}`）；老的 `POST /api/stacks?type=2&method=string` 会返回 **405 Method Not Allowed**。排障时先用 `GET /api/stacks` 确认鉴权与数据格式正常，再怀疑路径。
+2) **Docker 对缺失的 bind-mount 源目录会自动创建为 root:root**，而容器内非 root 用户（如 node 镜像的 uid 1000）将无法写入 → SQLite 打不开、容器起不来。**必须在部署前显式预建目录并 chown 到容器用户 uid**。若无 SSH，可借 Portainer API 起一个"挂载宿主目录的一次性容器"来执行 mkdir/chown，用完即删。
+3) **通过 Portainer 创建一次性容器时，它不会自动拉取镜像**（报 `No such image`）。要选用**目标主机上已存在**的镜像，或先调镜像拉取接口。
+4) **凡"需要用户去面板点几下"的部署步骤，先确认自己能否用其 REST API 代劳**——本轮建 Stack、建目录、写后台配置全部由 API 完成，用户零手动配合，这是用户明确期望的工作方式。
 
 ## 行动指南 Action Guide
 
@@ -624,6 +651,15 @@ unsafe { let w = ptr as *mut AnyObject; let _: () = msg_send![w, setAcceptsMouse
 【仍待用户提供的资料】1) **GitHub 只读 token**（唯一现在就需要给我的——没有它服务器读不到私有仓库 Release，自动发版转不起来）；2) Docker Hub token 需先作废重建（上一个已泄露），新 token 不经聊天传递；3) GitHub Secrets 两项 `TAURI_SIGNING_PRIVATE_KEY`（私钥文件全部内容）与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（留空）——**由用户自行填入 GitHub 仓库设置，不要发给我**；4) 两台 Portainer 的 API Key（**不贴聊天**，等后台「系统升级」页做好后由管理员在页面填写）；5) 确认镜像名 `miaochi/kuaiban-server` 公开是否可行。
 
 【下一步（已向用户提出、等待答复）】开发管理后台「系统升级」页：选环境（测试/正式）→ 检查更新（读 GitHub Release 版本号）→ 一键升级（调对应 Portainer API 改镜像 tag + pullImage 重建 Stack）。全仓 558 个测试。
+- [2026-10-04 10:19] [行动指南] 部署能力边界盘点：我能全包 7 步，3 步需运维；阻塞在镜像公开/私有决策 — 本轮为能力盘点与待决策项澄清，无代码改动。
+
+【已验证的本机能力（决定"我能代劳到哪一步"）】1) 本机 Docker 可用，镜像构建此前已实测通过；2) **Portainer API 密钥可读写**（两台 Endpoint ID 均为 1，已实测鉴权通过）→ **我能直接创建 Stack、拿 Stack ID、改环境变量**，用户不必手动点面板；3) `gh` CLI 已登录 miaochi998 → 我能打 tag、看/重跑 CI、验自动发版。4) Docker Hub 未在本机登录，但此前文档中的 token 仍在 `/tmp/ops-reply.md`，可用于 `docker login` 与 push。
+
+【我能全包的部署步骤】构建并推镜像到 Docker Hub → 用 Portainer API 创建两台 Stack（`kuaiban-test` / `kuaiban-production`）→ 取回 Stack ID → 走快办后台 API 配置 Portainer 连接设置 → 验证链路（健康检查/下载页/管理后台）→ 打 tag 验证 CI 自动发版与客户端自更新。
+
+【我做不到、必须用户或运维做的三件事（均在运维已列出的待办里）】1) **UFW 放行 6522**；2) **路由器映射 `16522 → 192.168.2.10:6522`**；3) **阿里云 NPM 配 Proxy Host + Let's Encrypt 证书**（我没有任何该机器的权限）。另一项需用户决策：**Apple 开发者账号（macOS 公证）**——要付费且需用户拍板；不办公证则用户首次打开可能遇到 Gatekeeper 提示。
+
+【待用户决策（阻塞下一步）】**Docker Hub 镜像公开还是私有**。运维建议公开（与既有 `miaochi/*` 一致、Portainer 拉取无需凭据），但**本项目 Dockerfile 把服务端 TypeScript 源码直接放进镜像**（服务端是用 Node 直接跑 TS，无编译产物），因此**镜像公开 = 服务端源码公开**。三选项：A 公开（最省事，代码公开）；B 私有（代码不外泄，运维需在 Portainer 配 Docker Hub 凭据）；C 改造成只放编译后 JS（仅提高门槛，非真正保护）。我的倾向：这是待办工具服务端、代码本身无秘密，但若用户私有仓库是有意为之则应选 B。**用户尚未答复。** 全仓 568 个测试。
 
 ## 备注 Notes
 
