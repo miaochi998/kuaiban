@@ -1,245 +1,243 @@
 ---
 name: kuaiban-release
-description: 快办（KuaiBan）发版与服务端升级的标准流程 —— 客户端打 tag 触发 CI 自动构建并自动更新，服务端构建镜像后先在测试机验证、再升生产机。含验证清单与本项目已踩过的所有坑。
-whenToUse: 当要给快办发布新版本、升级服务端、或需要确认线上状态时使用。
+description: 快办（KuaiBan）发版与升级的标准流程 —— 客户端打 tag 自动构建并自动更新；服务端可独立发版（只推镜像、不惊动客户端），再在后台一键升级测试机与生产机。含环境约束、架构要点与全部已踩过的坑。
+whenToUse: 当要给快办发布新版本（客户端或服务端）、升级服务器、或排查线上状态时使用。
 ---
 
 # 快办发布 / 升级
 
-> **背景**：部署架构已经定型，运维已退场。**日常发版升级完全由我们自主完成，不需要运维参与。**
-> 只有基础设施级变更（防火墙 / 路由器映射 / 阿里云 NPM / 宿主机）才需要联系运维，且必须**提前说明需求、不要自行尝试**。
+> 部署架构已定型、**运维已退场**。日常发版升级完全自主，不需要运维参与。
+> 只有基础设施级变更（防火墙 / 路由器 / 阿里云 NPM / 宿主机）才联系运维，且必须**提前说明、不要自行尝试**。
 
-## 环境与地址（改任何东西前先确认目标）
+## 一、环境与地址
 
 | | 测试机 | 生产机 |
 |---|---|---|
-| 内网地址 | `http://192.168.2.6:6522` | `http://192.168.2.10:6522` |
+| 内网 | `http://192.168.2.6:6522` | `http://192.168.2.10:6522` |
 | Portainer | `http://192.168.2.6:9000` | `http://192.168.2.10:9000` |
-| Stack 名 | `kuaiban-test` | `kuaiban-production` |
-| Stack ID | `5` | `5` |
+| Stack 名 / ID | `kuaiban-test` / `5` | `kuaiban-production` / `5` |
 | Endpoint ID | `1` | `1` |
 | 数据目录 | `/opt/kuaiban/data` | `/opt/kuaiban/data` |
 
-- **两机端口完全相同（都是 6522），只能靠 IP 区分。改配置前务必确认 IP。**
-- **测试机不占外网入口**，只有内网可达 → 怎么折腾都不会影响员工。
-- 外网入口 `https://kuaiban.bonnei.com` → 阿里云 NPM(id=13) → `ddns.bonnei.com:16523` → 爱快 → `.10:6522`。
-- 镜像：Docker Hub `miaochi/kuaiban-server`（公开）。
+- **两机端口相同（都 6522），只能靠 IP 区分。改配置前先确认 IP。**
+- 容器内监听 `6520`，映射 `6522:6520`。**内网 6520/6521 被 BNOA 占用** ⇒
+  `KUAIBAN_PORT` 必须是 `6522`，**绝不能回落到 6520**（端口冲突、服务起不来）。
+- **测试机不占外网入口**（只有内网可达）⇒ 怎么折腾都不影响员工。
+- 外网：`https://kuaiban.bonnei.com` → 阿里云 NPM(id=13) → `ddns.bonnei.com:16523` → 爱快 → `.10:6522`。
+- 镜像：Docker Hub `miaochi/kuaiban-server`（公开）。后台：`https://kuaiban.bonnei.com/admin`。
+- **升级后台页面后必须刷新页面**才会看到新界面。
 
-**端口映射与防火墙由运维维护，不要改动。**
+### 这台服务器能访问什么（决定方案可行性）
+
+| 目标 | 可达 | 备注 |
+|---|---|---|
+| `api.github.com` | ✅ | 下载页 / 版本检查 / 回源都靠它 |
+| `github.com` 直链 | ❌ 超时 | 必须走 API 通道 + `Accept: application/octet-stream` |
+| `hub.docker.com` | ❌ | 直连 registry 超时，靠本机 4 个镜像加速器拉镜像 |
+
+**推论：需要服务端直接访问境外服务的方案，必须在目标服务器上验证连通性** ——
+曾据"开发机能读 Docker Hub"改成读镜像 tag，服务器读不到，方案作废。
 
 ---
 
-## 一、发客户端新版本（最常见）
+## 二、两条独立的发版路径
 
-客户端地址是**打包时烧死的**（`apps/desktop/src/lib/endpoints.ts` 的 `PRODUCTION_ORIGIN`），
-所以发版只需打 tag，其余全自动。
+### A. 发客户端（会推送给员工）
 
 ```bash
-# 1) 改版本号（tauri.conf.json 与 Cargo.toml 由 CI 自动同步，本地改不改都行）
-# 2) 提交
 git add -A && git commit -m "..."
 git push origin main
-
-# 3) 打 tag 触发构建
-git tag v0.2.0
-git push origin v0.2.0
-
-# 4) 看构建（约 18 分钟）
-gh run list --repo miaochi998/kuaiban --limit 1
-gh run watch --repo miaochi998/kuaiban
+git tag v0.1.16          # 下个正式客户端版本从 v0.1.16 起（v0.1.14/0.1.15 已被"仅服务端"占用）
+git push origin v0.1.16
 ```
 
-CI 会自动：构建 macOS（Apple 芯片 / Intel）+ Windows → 签名 → 发 GitHub Release。
+CI 自动构建 macOS（Apple 芯片 / Intel）+ Windows → 签名 → 发 GitHub Release。
+之后**什么都不用做**：下载页自动跟上、已装客户端自动更新。
 
-**然后什么都不用做**：
-
-- 服务端自动跟随 Release → **下载页自动更新**
-- 已装客户端自动更新
-
-> 失败时重跑：`gh workflow run release-client.yml --repo miaochi998/kuaiban -f version=0.2.0`
-
-### ★ 发完立刻"催"一次缓存预热（重要，否则第一个下载的人要等）
-
-服务端发现新版本后会**在后台把安装包拉到本地**，但预热是在它**下一次去问 GitHub** 时
-才启动的（结果缓存 5 分钟）。所以发布后如果没人访问，预热就不会开始 ——
-这期间第一个点下载的同事要等服务器从 GitHub 取完（实测 3.2MB 要 60 秒以上）。
-
-**打一次 `/api/releases` 就能立刻触发预热**：
+### B. 只发服务端（**不惊动客户端**）
 
 ```bash
-curl -sS -o /dev/null https://kuaiban.bonnei.com/api/releases
-# 等 2~3 分钟让后台拉完，然后下载就是本地直读（毫秒级）
+gh workflow run release-client.yml --repo miaochi998/kuaiban \
+  -f version=0.1.16 -f server_only=true
 ```
 
-（同一个域名也会触发测试机那一侧？不会 —— 域名只指生产机。测试机需要时，
-用 `curl -sS -o /dev/null http://192.168.2.6:6522/api/releases` 单独催一次。）
+结果：只构建推送镜像（客户端矩阵与"发 Release"两个 job 被 `skipped`），
+并由 **CI 自己的步骤**建一个"仅服务端"Release 作为版本记录。
 
-### 验证（必做）
-
-```bash
-curl -sS https://kuaiban.bonnei.com/api/releases | python3 -m json.tool | head -30
-# 版本号应为新版本，各平台 available=true
-
-curl -sS https://kuaiban.bonnei.com/updates/latest.json | python3 -m json.tool
-# platforms 里 darwin-aarch64 / darwin-x86_64 都应有 signature
-
-# 外网真实下载一次（这才是同事的真实路径）
-curl -sS -o /tmp/x.dmg -w '%{http_code} %{size_download} %{time_total}s\n' \
-  https://kuaiban.bonnei.com/downloads/<新文件名>.dmg
-```
+> 🔴 **绝不要手工 `gh release create`** 补建这种 Release —— 它用**个人凭据**建 tag，
+> 会触发 `push: tags` 工作流、**跑一次完整构建**（已踩过）。
+> CI 里用 `GITHUB_TOKEN` 建的 tag **不会**触发工作流，所以必须交给 CI。
 
 ---
 
-## 二、升级服务端（先测试机，再生产机）
+## 三、后台一键升级
 
-```bash
-# 1) 本地验证（**必做**，见「铁律」）
-pnpm typecheck && pnpm test
+`https://kuaiban.bonnei.com/admin` → 「系统升级」。**每台机器一张卡片，各自显示自己的真实版本**
+（不是"提供这个页面的服务器"的版本）：
 
-# 2) 构建 linux/amd64 镜像 —— 服务器是 x86_64，开发机是 Apple 芯片，必须交叉构建
-docker build --platform linux/amd64 -f apps/server/Dockerfile \
-  -t miaochi/kuaiban-server:0.2.0 . 
-docker push miaochi/kuaiban-server:0.2.0
-docker tag miaochi/kuaiban-server:0.2.0 miaochi/kuaiban-server:latest
-docker push miaochi/kuaiban-server:latest
+```
+┌─ 测试 ─────────────┐   ┌─ 正式 ─────────────┐
+│ 0.1.15 当前运行版本 │   │ 0.1.13 当前运行版本 │
+│ [可升级到 0.1.16]   │   │ [可升级到 0.1.16]   │
+│ [升级到 0.1.16]     │   │ [升级到 0.1.16]     │
+└────────────────────┘   └────────────────────┘
 ```
 
-### 3) 先升测试机
+**先升「测试」→ 验证 → 再升「正式」。** 升级期间按钮禁用并显示实时进度；
+**自我升级时页面会短暂断开，属正常**，界面会继续轮询直到确认结果。
+版本相同时按钮变成「重新部署当前版本」（同机制、不改 tag，用于容器异常重启或同 tag 镜像被重推）。
 
-**首选**：在快办管理后台「系统升级」页选「测试」→ 填版本号 → 开始升级。
-（后台地址：`https://kuaiban.bonnei.com/admin`，域名指生产机时用 `http://192.168.2.6:6522/admin` 升测试机）
-
-**或者直接调 Portainer API**（后台升级功能异常时的兜底）：
-
-```bash
-# 取 Stack 当前 compose 内容 —— 注意必须调 /file，/stacks/{id} 不含内容
-curl -sS -H "X-API-Key: $KEY" \
-  "http://192.168.2.6:9000/api/stacks/5/file?endpointId=1"
-
-# 更新（body: {stackFileContent, env:[...], prune:false, pullImage:true}）
-curl -sS -X PUT -H "X-API-Key: $KEY" -H 'content-type: application/json' \
-  "http://192.168.2.6:9000/api/stacks/5?endpointId=1" --data-binary @body.json
-```
-
-**验证测试机**（内网直连，不需要客户端）：
+**命令行兜底**：
 
 ```bash
-curl -sS http://192.168.2.6:6522/api/health          # {"ok":true}
-curl -sS http://192.168.2.6:6522/api/releases | head -c 200
-curl -sS -o /dev/null -w '%{http_code}\n' http://192.168.2.6:6522/
+# ⚠️ /stacks/{id} 不含 compose 内容，要单独调 /file
+curl -sS -H "X-API-Key: $KEY" "http://192.168.2.6:9000/api/stacks/5/file?endpointId=1"
 ```
 
-功能相关改动要**真的用一次**再上生产（建待办、同步、看界面）。
+> 🔴 **PUT Stack 的 `env` 是【整体替换】不是合并** —— 必须带**完整清单**。
+> 只发一部分会冲掉其它变量（曾把 `KUAIBAN_PORT` 冲掉 → 回落 6520 → 撞端口 →
+> **测试机当场不可用**）。完整清单：
+> `KUAIBAN_IMAGE` / `KUAIBAN_PORT=6522` / `KUAIBAN_VERSION` /
+> `KUAIBAN_ADMIN_PASSWORD` / `KUAIBAN_PUBLIC_ORIGIN` /
+> `KUAIBAN_GITHUB_REPO` / `KUAIBAN_GITHUB_TOKEN`
 
-### 4) 测试没问题，再升生产机
-
-同样方式，把目标换成 `192.168.2.10` / Stack `kuaiban-production`。
-
-### 5) 验证生产
-
-```bash
-curl -sS https://kuaiban.bonnei.com/api/health
-curl -sS https://kuaiban.bonnei.com/api/releases | head -c 200
-curl -sS -o /dev/null -w '%{http_code}\n' https://kuaiban.bonnei.com/
-```
+**Portainer 的 Stack 环境变量只用于 compose 变量替换** ——
+compose 里没写 `${VAR}` 的地方变量不会进容器；新增服务端变量必须同时在
+`deploy/docker-compose.yml` 的 `environment:` 里引用。
 
 ---
 
-## 三、铁律（都是本项目真踩过的）
-
-### 1. CI / shell 里的逻辑，提交前必须本地跑一遍
-
-本项目 CI 连续失败三次，根因**没有一个是业务逻辑**，全是胶水代码：
-
-| 坑 | 现象 | 正确做法 |
-|---|---|---|
-| `pnpm/action-setup` 与 `package.json` 同时指定版本 | 立刻失败 `Multiple versions of pnpm specified` | 只留 `packageManager` 一个来源 |
-| `macos-13` runner 已退役 | job **永远 queued**（看着像"在跑"） | 用 `macos-15-intel` |
-| `sed "0,/^x = /s//x = \"v\"/"` | `s//repl/` 只替换前缀、旧值残留 → TOML 解析失败 | 用 `node` 改配置 |
-| `[ -z "$x" ] && x=y` | 条件为假时返回 1，被 `set -e` 终止 | 用 `if` 或 `${x:-default}` |
-| **node 脚本内联在 YAML 的 `run:` 里** | 三层转义把 `\d` 变成 `\\d`，**三平台全挂** | **脚本放独立文件**，`run: node scripts/xxx.mjs` |
-
-**GitHub Actions 里 `queued` 超过几分钟 = runner 标签失效或额度不足，不是"在排队"。**
-
-### 2. Portainer 相关的坑
-
-- **`GET /api/stacks/{id}` 只返回元数据，不含 compose 内容** → 必须调
-  **`GET /api/stacks/{id}/file?endpointId=`**。用空内容 PUT 会得到
-  `400 Invalid request payload: Invalid stack file content`。
-- 创建 Stack 在 2.27 是 **`POST /api/stacks/create/standalone/string?endpointId=`**；
-  老的 `POST /api/stacks?type=2` 返回 **405**。
-- **创建容器不会自动拉镜像**（报 `No such image`）→ 要选目标主机上已有的镜像。
-- **Portainer 的 Stack 环境变量只用于 compose 变量替换**：compose 里没写 `${VAR}` 的地方，
-  变量**不会进容器**。新增任何服务端环境变量，必须同时在 `deploy/docker-compose.yml`
-  的 `environment:` 里显式引用。
-- **`docker build` 一定要带 `--platform linux/amd64`**（服务器是 x86_64）。
-- 不要改 Stack 名 / 容器名（虽然数据在宿主机目录、改名不丢，但运维明确要求不要改）。
-
-### 3. 对接外部 API 时，测试替身必须照抄真实响应结构
-
-升级功能的单元测试全绿，真机上照样 400 —— 因为假 fetch 把 compose 内容塞进了
-真实响应里根本没有的字段。**"只有真环境才暴露"的 bug，几乎都是替身比真实对象更宽容造成的。**
-空内容 / 空响应时，**破坏性操作必须硬拒绝**（拿不到 compose 就报错，不要盲改）。
-
-### 4. 下载分发
-
-- **对外地址一律用自有域名，绝不直连 GitHub**（同事电脑连不上）。
-  服务端作为分发点回源取回并缓存。
-- **回源必须走 API 通道**：`GET api.github.com/repos/<o>/<r>/releases/assets/<id>`
-  ＋ `Accept: application/octet-stream`（`github.com` 直链在国内超时）。
-- **必须有缓存预热**：发现新版本后后台把所有安装包拉到本地。否则第一个下载的人要等
-  服务器从 GitHub 取完（实测 3.2MB 要 111 秒，大文件直接超时）。
-  预热后是本地直读（0.017 秒）。
-- **macOS 架构绝不能猜**：更新包文件名必须带 `aarch64`/`x64`（CI 会重命名），
-  分不清就**不发** —— 发错芯片的包用户打不开。
-
-### 5. 其他
-
-- **验证脚本里不要反复调登录接口**（会触发限频把自己挡住）。多次鉴权请复用同一个 token。
-- **`gh` CLI 已登录 `miaochi998`**，可以直接代用户操作 GitHub
-  （设 Secrets、看/重跑 CI、看 Release）。给 GitHub 设 Secrets 时用
-  `gh secret set <名> --repo miaochi998/kuaiban < <文件路径>`，内容不经聊天。
-- **多行或含引号的 git 提交消息用 heredoc**：
-  `git commit -F - <<'EOF' … EOF`（用 `-m "…"` 会因引号破坏而报
-  `pathspec ... did not match any file(s)`）。
-- **凭据不入库**：`apps/server/.env.local` 已被 gitignore。
-  Portainer API Key 与 GitHub token 都存在**服务端数据库**里（管理后台可配），
-  不在 compose、不在代码。
-- 服务端 `KUAIBAN_GITHUB_TOKEN` 或 `KUAIBAN_GITHUB_REPO` 失效时**下载页会静默空掉** ——
-  排查时先看 `/api/releases` 的 `version` 是否为空，再确认 token 有效性
-  （判定法：同 token 在本机与容器内都 401、而 `gh` 正常 ⇒ 凭据失效）。
-
----
-
-## 四、常用排查
+## 四、验证
 
 ```bash
-# 服务端状态
 curl -sS http://192.168.2.6:6522/api/health
 curl -sS http://192.168.2.10:6522/api/health
 curl -sS https://kuaiban.bonnei.com/api/health
+curl -sS https://kuaiban.bonnei.com/api/releases | python3 -m json.tool | head -30
+curl -sS https://kuaiban.bonnei.com/updates/latest.json | python3 -m json.tool
 
-# 域名指向哪台？（两台数据库内容不同，可用账号列表区分）
-#   测试机有账号 ceshi、生产机只有 admin
+# 实际下载一次（同事的真实路径）
+curl -sS -o /tmp/x.dmg -w '%{http_code} %{size_download} %{time_total}s\n' \
+  https://kuaiban.bonnei.com/downloads/<文件名>
 
-# 容器状态与日志（用 Portainer API）
-KEY=<测试机或生产机的 API Key>
-curl -sS -H "X-API-Key: $KEY" "http://<host>:9000/api/endpoints/1/docker/containers/json?all=1"
-curl -sS -H "X-API-Key: $KEY" "http://<host>:9000/api/endpoints/1/docker/containers/<id>/logs?stdout=1&stderr=1&tail=30"
-
-# 检查更新
-curl -sS -X POST https://kuaiban.bonnei.com/api/admin/upgrade/check \
-  -H "authorization: Bearer <管理员 token>"
+# 发完版立刻催预热（否则第一个下载的人要等 40 秒以上）
+curl -sS -o /dev/null -X POST https://kuaiban.bonnei.com/api/refresh
+# 测试机单独催：curl -sS -o /dev/null http://192.168.2.6:6522/api/releases
 ```
 
-## 五、运维边界
+**判定"升级成功"不能只看界面** —— 三处一起看：
+① 界面结果；② 目标 Stack 的 `UpdateDate` 是否变化；③ 容器 ID 与创建时间是否变化。
 
-**不需要运维**：发版、升测试机、升生产机、客户端自动更新、下载页更新、证书续期、每日备份。
+**更新包字节数对照**（一眼判断是否串版本）：`KuaiBan_aarch64.app.tar.gz` ——
+0.1.1=3244564 ／ 0.1.2=3244508 ／ 0.1.3=3245018 ／ 0.1.4=3245329 ／
+0.1.5=3245087 ／ 0.1.6=3245034 ／ 0.1.7=3245237。
+**发新版后若看到旧值 = 缓存串版本复发**（见第五节 4）。
 
-**需要运维（提前说明需求，不要自行尝试）**：防火墙规则、路由器映射、阿里云 NPM / 证书异常、
-宿主机故障与磁盘、Docker / Portainer 本身的问题、新增外网入口。
+---
+
+## 五、架构要点（改之前先理解）
+
+1. **两种"最新"是分开的**（`apps/server/src/github-releases.ts`）：
+   - `fetchLatestRelease` = 最新的、**含客户端产物的** Release（跳过空壳）→ 下载页 / `/updates/latest.json`
+   - `fetchNewestRelease` = 最新的 Release（不论有无产物）→ **服务端版本检查**
+   **不拆开，"只发服务端"会让最新 Release 变空壳、下载页与自动更新全废。**
+2. **版本号必须逐段数值比较**：`"0.1.10" < "0.1.9"` 在字符串序下成立，会判反。
+   用 `compareVersion()`；只用严格 `x.y.z` 参与比较（过滤 `latest`、日期、分支名）。
+3. **读不到上游 ≠ 没有更新**：读失败要报明确失败态并走兜底，**不能返回空冒充"已是最新"**。
+   同理**界面不知道的事就说不知道**（曾把 `latest === null` 显示成"已是最新"，骗过用户）。
+4. **分发缓存必须带版本维度**：更新包**文件名跨版本重复**（0.1.1 与 0.1.2 都叫
+   `KuaiBan_aarch64.app.tar.gz`）。曾先后踩两次：签名缓存串版本（客户端报
+   `The update was signed for version X but the endpoint announced Y`）、
+   安装包缓存串版本（`The signature verification failed`）。
+   现：签名缓存按版本分目录；安装包每次刷新**按大小与 Release 声明比对，不一致就删**（自愈）。
+5. **更新包必须带架构**：Tauri 打出的 macOS 更新包原名无架构信息（架构只在目录名上），
+   CI 会重命名为 `KuaiBan_aarch64.app.tar.gz` / `KuaiBan_x64.app.tar.gz`。**分不清就不发** ——
+   发错芯片的包用户打不开。
+6. **缓存预热**：服务端发现新版本后后台拉安装包。触发两条：服务端 5 分钟定时器 +
+   CI 发版后调 `POST /api/refresh`。否则第一个下载的人要等服务器从 GitHub 取完。
+
+---
+
+## 六、客户端（Tauri）侧的坑
+
+- **浮动挂件里不能用 `window.confirm` / `alert`**：快办是 `ActivationPolicy::Accessory`
+  的非激活面板，**系统模态框弹不出来**，`confirm()` 直接返回 false，表现为"点了没反应"。
+  **一律用界面内确认。**
+- **凡"改数据"的功能，测试要盯住最容易假成功的地方**（"只清了界面没清存储""失败却返回成功"）——
+  缺这类测试，缺陷会直接漏到用户手上。
+- **登出/切换账号要清掉会话态**（曾出现登出后仍显示"待办属于另一个账号"）。
+- **`plaintextCodec.decode` 只解析不校验** ⇒ `decodePull` 做必填字段校验，
+  坏记录进 `broken` 并跳过（**不能让个别坏数据拖垮整次同步**），可选字段缺失给默认值。
+- **界面不知情时不得用默认值冒充结论**；耗时操作要立刻禁用按钮并给持续变化的进度；
+  **"预期内的中断"要预先说明**（自我升级时页面断开属正常）。
+
+---
+
+## 七、CI / 脚本铁律（都真踩过）
+
+| 坑 | 现象 | 正确做法 |
+|---|---|---|
+| `pnpm/action-setup` 与 `package.json` 同时指定版本 | `Multiple versions of pnpm specified` | 只留 `packageManager` 一个来源 |
+| `macos-13` runner 已退役 | job **永远 queued**（像"在跑"） | 用 `macos-15-intel` |
+| `sed "0,/^x = /s//x = \"v\"/"` | `s//repl/` 只替换前缀、旧值残留 → TOML 解析失败 | 用 `node` 改配置 |
+| `[ -z "$x" ] && x=y` | 条件为假时返回 1，被 `set -e` 终止 | 用 `if` 或 `${x:-default}` |
+| **node 脚本内联在 YAML 的 `run:`** | 三层转义把 `\d` 变 `\\d`，三平台全挂 | **脚本放独立文件**，`run: node scripts/xxx.mjs` |
+| `download-artifact` 未过滤 | 把 `*.dockerbuild` 缓存产物当发布产物下载 → 解压失败 | 加 `pattern: bundle-*` |
+| **python 字符串替换未 assert** | 锚点不匹配时 `.replace()` **静默不生效却打印 OK** | **`assert old in s`**，改完**解析/读取核对** |
+| **手工 `gh release create`** | 个人凭据建 tag → 触发完整构建 | 交给 CI（GITHUB_TOKEN 建的 tag 不触发） |
+
+- **`queued` 超过几分钟 = runner 标签失效或额度不足**，不是"在排队"。
+- **CI 报错文案会误导**（"Artifact download failed" 实为"下载了不该下载的产物"）：
+  **先读日志再决定是否重跑；重跑仍失败必须立刻查日志。**
+- **改了 workflow 后只重跑旧 run 没用**（沿用原提交的脚本）——要让修复生效必须让 tag/分支指向新提交；
+  **tag 若仍指向同一提交，GitHub 不会触发新 run**。
+
+---
+
+## 八、排查
+
+```bash
+gh run list --repo miaochi998/kuaiban --limit 6
+# event 与 ref 能立刻定位是谁触发的（曾靠它查出"完整编译"是手工建 tag 导致）
+gh run list --repo miaochi998/kuaiban --limit 3 --json databaseId,event,headBranch,status,conclusion
+gh run cancel <id>
+
+# 失败在哪一步（run 未结束时拿不到日志）
+gh run view <id> --repo miaochi998/kuaiban --json jobs \
+  -q '.jobs[] | "\(.name): \(.conclusion) ← \(.steps[] | select(.conclusion=="failure") | .name)"'
+
+# 容器状态与日志（Portainer API）
+curl -sS -H "X-API-Key: $KEY" "http://<host>:9000/api/endpoints/1/docker/containers/json?all=1"
+curl -sS -H "X-API-Key: $KEY" "http://<host>:9000/api/endpoints/1/docker/containers/<id>/logs?stdout=1&stderr=1&tail=30"
+```
+
+**域名指向验证（硬办法）**：把测试机容器临时停数十秒，观察域名是否仍正常 ——
+仍正常即证明域名与测试机无关（运维用过此法）。**用完立即恢复。**
+（区分两台的简易法：测试机有账号 `ceshi`，生产机只有 `admin`。）
+
+---
+
+## 九、测试纪律
+
+- **红灯不提交、不发版。**顺序固定：**看失败 → 查清原因 → 再提交**。（犯过两次。）
+- **涉及"今天"的断言必须按业务日规则算**（业务日边界 **04:00**），禁止直接用 `new Date()` ——
+  用 `todayWeekdayCn()`。已两次因日期依赖在特定时间点挂掉（「每周六」；凌晨业务日与自然日差一天）。
+- 提交前本地跑：`pnpm typecheck && pnpm test && pnpm exec playwright test`。
+  **CI/shell 里的逻辑提交前必须本地跑一遍** —— 历史上三次 CI 失败，根因全是胶水代码。
+- **验证必须走被测的那条路径**，不能用等价的手工操作代替（曾用手工建的 Release
+  代替 CI 步骤去"验证"，等于没验）。
+
+---
+
+## 十、运维边界
+
+**不需要运维**：发版（客户端/服务端）、升测试机、升生产机、客户端自动更新、
+下载页更新、证书续期、每日备份。
+
+**需要运维（提前说明，不要自行尝试）**：防火墙规则、路由器映射、
+阿里云 NPM / 证书异常、宿主机故障与磁盘、Docker / Portainer 本身、新增外网入口。
 
 **备份**：`/opt/kuaiban/data` 已纳入运维每日备份（测试机 23:30 / 生产机 02:00），
-且已做 SQLite 一致性加固（备份前用 `VACUUM INTO` 生成原子快照）。
-里面有 `kuaiban.db` 与 `releases/`（安装包缓存，可再生）。
+且已做 SQLite 一致性加固（备份前 `VACUUM INTO` 原子快照）。
+内含 `kuaiban.db` 与 `releases/`（安装包缓存，可再生）。
 **更新签名私钥不在服务器上**（签名在 CI 完成），私钥只在 GitHub Secrets 与离线副本各一份。
