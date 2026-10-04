@@ -109,6 +109,54 @@ jobs:
             apps/desktop/src-tauri/target/**/release/bundle/**/*.sig
           if-no-files-found: error
 
+  server-image:
+    # ─────────────────────────────────────────────────────────
+    # 服务端镜像也在这里一起构建 —— **这是让"后台一键升级"能用的关键**
+    #
+    # 后台升级的逻辑是"读 GitHub Release 的版本号 → 把镜像换成
+    # <镜像名>:<那个版本号>"。所以**服务端镜像的 tag 必须与 Release 版本一致**，
+    # 否则后台会去找一个不存在的镜像。
+    #
+    # 以前我是在本地手动 build/push、tag 还随手起（0.1.3/0.1.4/0.1.5），
+    # 和客户端版本号根本不是一套 —— 后台升级只能靠碰巧。现在统一由一个
+    # tag 驱动，版本号天然对齐。
+    # ─────────────────────────────────────────────────────────
+    name: 构建服务端镜像
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: 解析版本号
+        id: v
+        shell: bash
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "$VERSION_INPUT" ]; then V="$VERSION_INPUT"; else V="${GITHUB_REF#refs/tags/v}"; fi
+          echo "VERSION=$V" >> $GITHUB_OUTPUT
+          echo "版本：$V"
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          # 服务器是 x86_64；在 arm 机器上构建必须显式指定
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_HUB_USERNAME }}/kuaiban-server:${{ steps.v.outputs.VERSION }}
+            ${{ secrets.DOCKER_HUB_USERNAME }}/kuaiban-server:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   release:
     name: 发 Release
     needs: build

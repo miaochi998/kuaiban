@@ -244,6 +244,12 @@ export async function applyUpgrade(opts: {
     if (at >= 0) envList[at] = { name: env.imageVar, value: nextImage };
     else envList.push({ name: env.imageVar, value: nextImage });
 
+    // 版本号变量也要跟着改 —— 它就是后台"当前版本"显示的那个值。
+    // 只改镜像不改它的话，升完级界面还显示旧版本，看起来像没升成功。
+    const vat = envList.findIndex((e) => e.name === "KUAIBAN_VERSION");
+    if (vat >= 0) envList[vat] = { name: "KUAIBAN_VERSION", value: opts.version };
+    else envList.push({ name: "KUAIBAN_VERSION", value: opts.version });
+
     // 3) 提交回去并让 Portainer 拉新镜像重建
     const deploy = await doFetch(stackUrl, {
       method: "PUT",

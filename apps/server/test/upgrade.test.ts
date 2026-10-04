@@ -126,6 +126,8 @@ describe("触发升级", () => {
     const sentEnv = putBody!.env as { name: string; value: string }[];
     expect(sentEnv.find((e) => e.name === "KUAIBAN_IMAGE")!.value).toBe("miaochi/kuaiban-server:0.1.2");
     expect(sentEnv.find((e) => e.name === "KUAIBAN_PORT")!.value).toBe("6522");
+    // 版本号变量也要跟着改，否则界面上的"当前版本"永远是旧的
+    expect(sentEnv.find((e) => e.name === "KUAIBAN_VERSION")!.value).toBe("0.1.2");
     expect(putBody!.pullImage).toBe(true);
   });
 
@@ -145,7 +147,11 @@ describe("触发升级", () => {
     await applyUpgrade({ env, version: "0.1.2", imageName: "miaochi/kuaiban-server", fetchImpl: fakeFetch });
 
     const sentEnv = putBody!.env as { name: string; value: string }[];
-    expect(sentEnv).toEqual([{ name: "KUAIBAN_IMAGE", value: "miaochi/kuaiban-server:0.1.2" }]);
+    // 镜像 + 版本号两项都会被补上（原来 compose 里都没有）
+    expect(sentEnv).toEqual([
+      { name: "KUAIBAN_IMAGE", value: "miaochi/kuaiban-server:0.1.2" },
+      { name: "KUAIBAN_VERSION", value: "0.1.2" },
+    ]);
   });
 
   it("拿不到 compose 内容时必须拒绝 —— 盲改会把堆栈写坏", async () => {
