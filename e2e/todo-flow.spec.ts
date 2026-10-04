@@ -740,9 +740,14 @@ test("输入「工作日 打卡」→ 工作日重复；建在周末会顺延到
   await page.press(".add", "Enter");
 
   const row = page.locator(".row", { hasText: "打卡" });
-  const dow = new Date().getDay(); // 0 = 周日, 6 = 周六
+  // ⚠️ 必须用**业务日**的星期几，不能用 new Date().getDay()。
+  // 业务日边界是 04:00：凌晨 0~4 点时，应用仍认为"今天是昨天"，
+  // 而 new Date() 已经翻到新的一天 —— 于是测试以为是工作日、
+  // 应用却按周末把待办顺延走，这条断言就莫名其妙地挂了。
+  // （实测就是凌晨 00:45 挂的。）
+  const weekday = todayWeekdayCn();
 
-  if (dow === 0 || dow === 6) {
+  if (weekday === "六" || weekday === "日") {
     // 周末：今天本来就不该有这条待办……
     await expect(row).toHaveCount(0);
     // ……但绝不能让它"悄悄地消失"。起始日会被对齐到下一个工作日，
