@@ -17,7 +17,8 @@ out/
 # Rust / Tauri
 # ───────────────────────────────────────────────
 target/
-apps/desktop/src-tauri/gen/
+# 只忽略 Tauri 自动生成的 schema；gen/android 是真正的安卓工程，必须入库
+apps/desktop/src-tauri/gen/schemas/
 
 # ───────────────────────────────────────────────
 # ★ 密钥与凭据 —— 绝不允许提交 ★
@@ -80,3 +81,6 @@ docs/部署-运维资料回传.md
 
 # 本地记忆文件：含内网 IP、域名、部署细节，不随代码发布
 PROJECT_MEMORY.md
+
+# Android 发布签名密钥：绝不能提交
+.android-signing/
