@@ -9,6 +9,18 @@
 #
 # 人不需要传任何文件到服务器。这是刻意的：凡是"每次发版都要人记得做一步"
 # 的流程，早晚会漏。
+#
+# ── 也可以只构建一部分（开发期省时间）──────────────────────────
+#
+#     gh workflow run release-client.yml -f targets=android -f version=0.1.23
+#
+#   targets=android  → 只出一个 APK 构建产物，**不打 tag、不发 Release**，
+#                      通常几分钟就好，适合手机真机调试
+#   targets=server   → 只推服务端镜像（等价于旧的 server_only）
+#   targets=desktop  → 只出 macOS ×2 + Windows（打 tag 时的默认）
+#   targets=all      → 全部
+#
+#   默认 desktop：**打 tag 不会顺带构建安卓**，桌面发版流程完全不受影响。
 
 name: 发布客户端
 
@@ -23,8 +35,18 @@ on:
         description: "版本号（例如 0.1.2）"
         required: true
         type: string
+      targets:
+        description: "构建目标"
+        required: true
+        type: choice
+        default: desktop
+        options:
+          - desktop   # macOS ×2 + Windows（桌面发版用）
+          - android   # 只出安卓 APK（开发期天天用，几分钟就好）
+          - server    # 只推服务端镜像
+          - all       # 全平台正式发版
       server_only:
-        description: "只构建服务端镜像（不动客户端）"
+        description: "（旧参数）只构建服务端镜像，等价于 targets=server"
         required: false
         type: boolean
         default: false
@@ -34,8 +56,9 @@ permissions:
 
 jobs:
   build:
-    # server_only 时跳过客户端打包（纯服务端改动不该惊动同事去更新客户端）
-    if: ${{ github.event_name == 'push' || inputs.server_only != true }}
+    # 桌面打包：打 tag 时跑；手动时只有 targets=desktop/all 才跑。
+    # （纯服务端或纯安卓改动不该惊动同事去更新桌面客户端）
+    if: ${{ github.event_name == 'push' || inputs.targets == 'desktop' || inputs.targets == 'all' }}
     name: 打包 ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -129,6 +152,9 @@ jobs:
     # tag 驱动，版本号天然对齐。
     # ─────────────────────────────────────────────────────────
     name: 构建服务端镜像
+    # 只有需要服务端镜像时才构建 —— 纯安卓调试不必等镜像（也省额度）
+    # 打 tag 时照旧构建（tag 同时代表客户端与服务端版本）
+    if: ${{ github.event_name == 'push' || inputs.targets != 'android' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -195,7 +221,7 @@ jobs:
           curl -sS -X POST --max-time 20 https://kuaiban.bonnei.com/api/refresh || true
 
   release:
-    if: ${{ github.event_name == 'push' || inputs.server_only != true }}
+    if: ${{ github.event_name == 'push' || inputs.targets == 'desktop' || inputs.targets == 'all' }}
     name: 发 Release
     needs: build
     runs-on: ubuntu-latest
