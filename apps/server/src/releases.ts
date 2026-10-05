@@ -140,10 +140,20 @@ export class ReleaseStore {
     });
     if (!release) return; // 拿不到就用旧缓存/本地清单
 
+    const updater = await this.updaterFromGithub(release);
+
+    // ⚠️ 更新清单没建起来时**不要把这次结果缓存住**（at: 0 = 始终视为过期，
+    // 下次请求会立刻重试）。
+    //
+    // 为什么：签名文件是逐个下载的，网络抖一下就可能失败。若把"清单为空"
+    // 缓存 5 分钟，客户端在这 5 分钟里检查更新就会拿到 404 / 空清单 ——
+    // 表现为「连不上更新服务器」，而服务端其实一切正常。
+    // （实测：容器刚重建后的一小段窗口里，macOS 与 Windows 客户端都报了
+    //   "连不上更新服务器"，就是它。）
     this.cached = {
-      at: Date.now(),
+      at: updater ? Date.now() : 0,
       listing: this.listingFromGithub(release),
-      updater: await this.updaterFromGithub(release),
+      updater,
     };
 
     // 先把**不是这个版本的**缓存清掉，再预热。

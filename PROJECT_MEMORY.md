@@ -1178,6 +1178,26 @@ Portainer 的"更新堆栈"是**同步接口**，重建容器在请求过程中�
 【方法论（已写入记忆，值得长期执行）】**SKILL 不是一次写就的文档 —— 每次踩坑都该回灌进去。** 本项目仅"我以为改好了、其实没有"就出现三次（脚本替换静默失败、用手工操作替代被测路径、改动未部署），**靠事后回忆不可靠，须即时回灌。**
 
 【状态（部署线已收官）】两台服务器运行 **0.1.15**（健康）；发布体系定型、运维已退场；全仓 601 个测试，类型检查 0 错误。**下一步：转入功能与体验迭代**，等待用户反馈"哪里慢、哪里绕、哪里记不住"，回归最初诉求"不要庞大、不要复杂、速度要快、使用简单"。
+- [2026-10-05 11:12] [工作记录] 修复 Windows 无法在线更新：清单缺 Windows 条目（更新包是安装器本身） — commit fe3e602。**修复：Windows 客户端无法在线更新（更新清单缺 Windows 条目）。**
+
+【真机报错（Windows 主机，用户实测）】`None of the fallback platforms ["windows-x86_64-msi", "windows-x86_64"] were found in the response `platforms` object` —— Windows 客户端在更新清单里依次找 `windows-x86_64-msi` 与 `windows-x86_64`，**两个都不存在**（清单里只有 `darwin-aarch64` / `darwin-x86_64`）。
+
+【★ 根因：Windows 的更新包是【安装器本身】，不是 `.nsis.zip`】从 CI 日志（run 37218268219 的 Windows job 111483152377）核对实际产物，Windows 构建**只产出**：
+- `KuaiBan_0.1.13_x64-setup.exe` + `.exe.sig`
+- `KuaiBan_0.1.13_x64_en-US.msi` + `.msi.sig`
+**根本没有 `.nsis.zip`**（那是我以为的 Windows 更新包形式）。而服务端 `updaterFromGithub` 的过滤只认 `.app.tar.gz`（macOS 形式）与 `.nsis.zip` ⇒ **Windows 条目永远生不出来** ⇒ 清单里只有 macOS。
+**服务端侧完全看不出异常**：文件名、签名、版本号都"正常"，只是少了一个平台；**只有 Windows 真机点"检查更新"才会暴露**（属"只有真机才能发现"那一类）。
+
+【修法（`apps/server/src/releases.ts`）】
+- 更新包识别补上 `.exe` 与 `.msi`：`/\.(app\.tar\.gz|nsis\.zip|exe|msi)$/i`
+- `targetOf()` 补映射：NSIS 安装器 `.exe` → **`windows-x86_64`**；MSI 安装器 `.msi` → **`windows-x86_64-msi`**（Tauri 在 Windows 上会依次找这两个 key，**两种都要给**）
+- 新增测试（用**真实产物名**构造）：断言 `windows-x86_64` 与 `windows-x86_64-msi` 都在、分别指向 `.exe` / `.msi`、且都带签名。服务端 **66 个测试**，全仓 **602 个**。
+
+【部署与下一步（进行中）】已用 `server_only` 方式发 **0.1.16**（run 37258443866，含此修复；不惊动客户端）。**下一步：镜像构建完后，用户在后台把两台升到 0.1.16，然后在 Windows 那台上再点一次「检查更新」验证** —— 届时应能正常检查并提示新版本。注意：Windows 客户端当前为 0.1.13，**在部署修复前它每次检查更新都会报上述错误**。
+
+【重要提示（已向用户提出）】**Windows 的更新链路此前从未被真正验证过**（macOS 一路顺畅，因为 `.app.tar.gz` 一直是对的）。**建议：以后正式给同事用之前，Windows 上也要像 macOS 一样完整走一遍**（检查更新 → 下载 → 安装 → 版本变化）。
+
+【环境事实（复用）】Windows x64 构建产物名形如 `KuaiBan_<版本>_x64-setup.exe`（NSIS 安装器）与 `KuaiBan_<版本>_x64_en-US.msi`；macOS 更新包为 CI 重命名后的 `KuaiBan_aarch64.app.tar.gz` / `KuaiBan_x64.app.tar.gz`。Tauri Windows 更新平台的回退顺序是 `windows-x86_64-msi` → `windows-x86_64`。
 
 ## 经验教训 Lessons Learned
 
@@ -1458,6 +1478,10 @@ unsafe { let w = ptr as *mut AnyObject; let _: () = msg_send![w, setAcceptsMouse
 2) **"完成"的判定标准要由实际使用方定义**：用户明确"没有一次无任何问题的完整编译+升级过程，就不能算完成"。**"功能跑通"与"用户认可完成"不是一回事** —— 交付前应先问清对方认定的完成标准。
 3) **GITHUB_TOKEN 创建的 tag 不会再触发工作流，这一点让"只发 Release 不触发构建"成为可行**：需要此类操作时，一律交给 CI 步骤完成，禁止手工 `gh release create`/`git push tag`（后者会用个人凭据触发 `push: tags` 工作流，本例已实际踩到并取消）。
 4) **为验证发布链路而发的"无代码变更版本"是合理成本**：0.1.15 的服务端代码与 0.1.13 完全相同，仅用于验证链路；**必须在交付说明中明确"升级后功能无变化"，避免用户误以为有新功能。**
+- [2026-10-05 11:12] [经验教训] 跨平台产物形式可能完全不同；服务端自检看不出"少了平台"；每平台须真机验证 — 1) **同一个功能在不同平台上可能有完全不同的产物形式，不能照搬**：Tauri 自动更新里，macOS 的更新包是另打的 `.app.tar.gz`，而 **Windows 的更新包就是安装器本身**（`.exe` / `.msi`），**根本不存在我以为的 `.nsis.zip`**。⇒ 服务端清单里 Windows 条目永远生不出来，Windows 客户端一检查更新就报 `None of the fallback platforms ["windows-x86_64-msi", "windows-x86_64"] were found`。**跨平台功能必须逐平台核对"真实产物长什么样"，而不是按另一平台的形式推断。**
+2) **"服务端侧看起来正常"是最危险的信号**：本轮清单里版本号、签名、URL 全对，**只是少了一个平台** —— 任何服务端自检都发现不了，**只有该平台真机点一下才会暴露**。⇒ **每个交付平台都要有各自的一次真机验证；一个平台跑通不代表其他平台可用。**
+3) **更新平台的 key 要用客户端实际会去找的名字**：Windows 上 Tauri 依次回退 `windows-x86_64-msi` → `windows-x86_64`，所以 NSIS 安装器映射到 `windows-x86_64`、MSI 安装器映射到 `windows-x86_64-msi`，**两个 key 都要提供**。
+4) **用真实产物名构造测试**：本轮新增的测试直接用 `KuaiBan_0.1.13_x64-setup.exe` / `..._en-US.msi` 这类**生产环境真实文件名**，才钉得住这类"命名形式判断错"的问题。
 
 ## 行动指南 Action Guide
 
