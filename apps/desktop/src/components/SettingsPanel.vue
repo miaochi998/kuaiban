@@ -12,7 +12,7 @@
 
 import { computed, ref } from "vue";
 import { useAccountStore } from "../store/account";
-import { useReminderStore } from "../store/reminders";
+import { useReminderStore , SOUND_OPTIONS } from "../store/reminders";
 import { useSyncStore } from "../store/sync";
 import { useUpdaterStore } from "../store/updater";
 
@@ -208,6 +208,22 @@ async function doLogout() {
 
       <!-- ── 提醒 ── -->
       <div class="sp-section">提醒</div>
+
+      <div class="sp-row">
+        <span class="sp-label">提醒音</span>
+        <div class="sp-picks">
+          <button
+            v-for="opt in SOUND_OPTIONS"
+            :key="opt.id"
+            class="sp-btn"
+            :class="{ on: reminderSettings.soundId === opt.id }"
+            type="button"
+            :title="`选用「${opt.label}」并试听`"
+            @click="reminders.setSoundId(opt.id); reminders.previewChime()"
+          >{{ opt.label }}</button>
+        </div>
+      </div>
+      <p class="sp-hint">点一下就换成这个声音，并放给你听 —— 不用先选再试。</p>
 
       <div class="sp-row">
         <span class="sp-label">提醒声音</span>
@@ -517,6 +533,25 @@ async function doLogout() {
 .sp-btn:hover {
   background: rgba(59, 110, 246, 0.12);
   color: #3b6ef6;
+}
+
+.sp-picks {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.sp-btn.on {
+  border-color: #3b82f6;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.sp-hint {
+  margin: 2px 0 8px;
+  font-size: 11px;
+  color: #9aa4b2;
 }
 
 .sp-toggle {

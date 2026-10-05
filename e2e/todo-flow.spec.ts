@@ -1171,3 +1171,29 @@ test("编辑面板没改动时点设置，直接切过去（不多问一句）",
   await expect(page.locator(".sp-title")).toHaveText("设置");
   expect(errors).toEqual([]);
 });
+
+test("提醒音可以选：清甜 / 男声 / 合成音，点一下就换并试听", async ({ page }) => {
+  const errors = collectErrors(page);
+  await page.locator(".head-icon").click();
+  await expect(page.locator(".sp-title")).toHaveText("设置");
+
+  // 三个选项都在
+  for (const label of ["清甜", "男声", "合成长音"]) {
+    await expect(page.locator(".sp-picks .sp-btn", { hasText: label })).toBeVisible();
+  }
+
+  // 默认是"清甜"（合成音又短又轻，用户反映听不见，所以默认换掉）
+  await expect(page.locator(".sp-picks .sp-btn", { hasText: "清甜" })).toHaveClass(/on/);
+
+  // 点"男声"→ 选中它（同时会试听一次，放不出来也不该报错）
+  await page.locator(".sp-picks .sp-btn", { hasText: "男声" }).click();
+  await expect(page.locator(".sp-picks .sp-btn", { hasText: "男声" })).toHaveClass(/on/);
+  await expect(page.locator(".sp-picks .sp-btn", { hasText: "清甜" })).not.toHaveClass(/on/);
+
+  // 关掉设置再打开，选择被记住了
+  await page.locator(".sp-close").click();
+  await page.locator(".head-icon").click();
+  await expect(page.locator(".sp-picks .sp-btn", { hasText: "男声" })).toHaveClass(/on/);
+
+  expect(errors).toEqual([]);
+});

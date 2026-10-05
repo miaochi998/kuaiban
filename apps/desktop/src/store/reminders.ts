@@ -22,6 +22,8 @@
 
 import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import qingtianSrc from "../assets/sounds/qingtian.mp3";
+import nanshengSrc from "../assets/sounds/nansheng.mp3";
 import {
   DEFAULT_QUIET_HOURS,
   ESCALATE_AFTER_MS,
@@ -70,6 +72,14 @@ export const SNOOZE_LONG_MS = 60 * 60_000;
 
 export interface ReminderSettings {
   soundEnabled: boolean;
+  /**
+   * 用哪个提醒音。
+   *
+   * `chime` 是原来用 Web Audio 现场合成的两声 —— 实测**又短又轻**，
+   * 用户反映"点了试听以为没声音"。所以默认改成用户提供、AI 生成的「清甜」。
+   * 合成音仍保留，作为第三个选项。
+   */
+  soundId: SoundId;
   quietHours: QuietHours;
   /** 全天事项（没定时间的）要不要在早上汇总一次 */
   allDaySummaryEnabled: boolean;
@@ -80,6 +90,7 @@ const SETTINGS_KEY = "kuaiban.reminder.settings.v1";
 
 const DEFAULT_SETTINGS: ReminderSettings = {
   soundEnabled: true,
+  soundId: "qingtian",
   quietHours: DEFAULT_QUIET_HOURS,
   allDaySummaryEnabled: true,
   allDaySummaryTime: DEFAULT_SUMMARY_TIME,
@@ -92,6 +103,7 @@ function loadSettings(): ReminderSettings {
     const parsed = JSON.parse(raw) as Partial<ReminderSettings>;
     return {
       soundEnabled: parsed.soundEnabled ?? DEFAULT_SETTINGS.soundEnabled,
+      soundId: isSoundId(parsed.soundId) ? parsed.soundId : DEFAULT_SETTINGS.soundId,
       quietHours:
         parsed.quietHours && typeof parsed.quietHours === "object"
           ? parsed.quietHours
@@ -222,7 +234,57 @@ export function dismissMorningSummary(): void {
  * 声音不是关键功能 —— 放不出来只是少一点提示，所以失败一律静默放弃，
  * **绝不能因为音频环境有问题把提醒本身搞挂**。
  */
+/**
+ * 可选的提醒音。
+ *
+ * 前两个是用户提供、AI 生成的 mp3（随安装包分发，体积各约 94KB）；
+ * 第三个是原来用 Web Audio 现场合成的两声。
+ *
+ * 为什么加了文件还要留合成音：合成音体积为 0、也不依赖解码器，
+ * 万一音频文件在某个平台上放不出来，用户还有东西可用。
+ */
+export type SoundId = "qingtian" | "nansheng" | "chime";
+
+export const SOUND_OPTIONS: { id: SoundId; label: string }[] = [
+  { id: "qingtian", label: "清甜" },
+  { id: "nansheng", label: "男声" },
+  { id: "chime", label: "合成长音" },
+];
+
+function isSoundId(v: unknown): v is SoundId {
+  return v === "qingtian" || v === "nansheng" || v === "chime";
+}
+
+/** 换提醒音（改完立刻保存） */
+export function setSoundId(id: SoundId): void {
+  settings.value = { ...settings.value, soundId: id };
+  saveSettings(settings.value);
+}
+
+/** 播放某个音频文件；失败静默放弃（声音不该把提醒本身搞挂） */
+function playFile(src: string): boolean {
+  try {
+    const audio = new Audio(src);
+    audio.volume = 1;
+    void audio.play().catch(() => {});
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function playChime(): void {
+  const id = settings.value.soundId;
+  if (id === "qingtian") {
+    if (playFile(qingtianSrc)) return;
+  } else if (id === "nansheng") {
+    if (playFile(nanshengSrc)) return;
+  }
+  playSynthChime();
+}
+
+/** 原来那两声合成音（也作为文件放不出来时的兜底） */
+function playSynthChime(): void {
   try {
     const Ctor =
       globalThis.AudioContext ??
@@ -427,5 +489,6 @@ export function useReminderStore() {
     setQuietEnabled,
     setAllDaySummaryEnabled,
     previewChime,
+    setSoundId,
   };
 }
