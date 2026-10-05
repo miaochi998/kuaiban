@@ -195,7 +195,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: 把版本号同步进 tauri.conf.json 与 Cargo.toml
-        run: node scripts/ci-set-version.mjs ${{ inputs.version }}
+        # ⚠️ 脚本读的是【环境变量 VERSION_INPUT】，不是命令行参数。
+        # 手动触发时 GITHUB_REF_NAME 是 "main"，会被判成非法版本号（踩过）。
+        # 其它 job 都这么传，这里保持一致。
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: node scripts/ci-set-version.mjs
 
       # 密钥从 GitHub Secrets 还原（不进仓库、不进日志）
       - name: 还原发布签名密钥
