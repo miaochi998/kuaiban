@@ -150,7 +150,10 @@ fn set_expanded_inner(app: &AppHandle, expanded: bool) {
 
     if let Some(window) = app.get_webview_window(WIDGET_LABEL) {
         // 收起时让鼠标穿透：面板已经滑出窗口，不该挡住底下任何窗口的操作
-        let _ = window.set_ignore_cursor_events(!expanded);
+        // 「鼠标穿透」是桌面专属概念：收起时让点击穿过挂件落到下面的窗口上。
+    // Android 上没有鼠标指针，也就无所谓穿透。
+    #[cfg(desktop)]
+    let _ = window.set_ignore_cursor_events(!expanded);
     }
 
     if !expanded {
@@ -674,27 +677,43 @@ fn migrations() -> Vec<Migration> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        // ⚠️ 单实例插件必须**第一个**注册（插件文档的要求），
-        // 否则它来不及拦住第二个实例，别的插件就已经跑起来了。
-        //
-        // 为什么必须有它：挂件的待办列表是内存副本，两个实例各持一份，
-        // A 里加的待办 B 看不到（要重启才同步）。用户会以为"数据丢了"。
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            // 第二个实例试图启动时，把已经在跑的那个叫出来 ——
-            // 让用户明白"程序就在这里，不是没反应"。
-            set_expanded_inner(app, true);
-        }))
-        .plugin(tauri_plugin_opener::init())
-        // 在线更新。真正干活的是前端（这样更新提示能融进挂件的界面），
-        // 这里只把能力挂上去。
+    // 先把 builder 建出来，再**逐段**挂插件。
+    //
+    // 为什么不用一条长链：`#[cfg]` **不能加在链式调用的某个方法上**，
+    // 而单实例/更新/进程这三个插件在 Android 上都不存在，
+    // 必须让它们整段消失。分段构建才能做到。
+    let builder = tauri::Builder::default();
+
+    // ⚠️ 单实例插件必须**第一个**注册（插件文档的要求），
+    // 否则它来不及拦住第二个实例，别的插件就已经跑起来了。
+    //
+    // 为什么必须有它：挂件的待办列表是内存副本，两个实例各持一份，
+    // A 里加的待办 B 看不到（要重启才同步）。用户会以为"数据丢了"。
+    //
+    // Android 上没有"多开同一个应用"这回事（系统只允许一个实例），所以不需要它。
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        // 第二个实例试图启动时，把已经在跑的那个叫出来 ——
+        // 让用户明白"程序就在这里，不是没反应"。
+        set_expanded_inner(app, true);
+    }));
+
+    let builder = builder.plugin(tauri_plugin_opener::init());
+
+    // 在线更新（Tauri updater）与"重启应用"都是桌面专属。
+    // **Android 上的更新走另一条路**：下载 APK 再交给系统安装。
+    #[cfg(desktop)]
+    let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
-        .plugin(
-            tauri_plugin_sql::Builder::default()
-                .add_migrations(DB_URL, migrations())
-                .build(),
-        )
+        .plugin(tauri_plugin_process::init());
+
+    let builder = builder.plugin(
+        tauri_plugin_sql::Builder::default()
+            .add_migrations(DB_URL, migrations())
+            .build(),
+    );
+
+    builder
         .manage(WidgetState::default())
         .invoke_handler(tauri::generate_handler![
             set_expanded,
@@ -717,7 +736,8 @@ pub fn run() {
                 make_non_activating(&window);
                 // 不点一下就不响应悬停的修复，见 enable_mouse_moved_events
                 enable_mouse_moved_events(&window);
-                // 初始为收起状态：鼠标穿透
+                // 初始为收起状态：鼠标穿透（桌面专属，见上）
+                #[cfg(desktop)]
                 let _ = window.set_ignore_cursor_events(true);
                 let _ = window.show();
             }
@@ -737,8 +757,13 @@ pub fn run() {
                 println!("[widget] KUAIBAN_DEBUG_EXPANDED=1 —— 启动即展开（调试用）");
             }
 
-            build_tray(&handle)?;
-            spawn_hover_watcher(handle);
+            // 托盘与悬停轮询都是桌面专属：Android 没有系统托盘，
+            // 也没有"鼠标悬停"这回事（触屏是点按）。
+            #[cfg(desktop)]
+            {
+                build_tray(&handle)?;
+                spawn_hover_watcher(handle);
+            }
 
             Ok(())
         })
