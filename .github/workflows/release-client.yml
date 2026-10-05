@@ -139,6 +139,81 @@ jobs:
             apps/desktop/src-tauri/target/**/release/bundle/**/*.sig
           if-no-files-found: error
 
+  android:
+    # 只在 targets=android/all 时跑；打 tag 不编安卓（桌面发版流程不受影响）
+    if: ${{ inputs.targets == 'android' || inputs.targets == 'all' }}
+    name: 打包 Android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # 安卓要用 Rust 编四个 ABI
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      # 本机是 Java 21 编过的，CI 保持一致，免得出现"本地能编、CI 不能编"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      # NDK 要显式装：runner 上装的版本未必是 Tauri 需要的那个
+      - name: 安装 Android NDK
+        run: sdkmanager "ndk;28.2.13676358" > /dev/null
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: 把版本号同步进 tauri.conf.json 与 Cargo.toml
+        run: node scripts/ci-set-version.mjs ${{ inputs.version }}
+
+      # 密钥从 GitHub Secrets 还原（不进仓库、不进日志）
+      - name: 还原发布签名密钥
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PW: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          mkdir -p .android-signing
+          printf '%s' "$KS_B64" | base64 -d > .android-signing/kuaiban-release.keystore
+          cat > apps/desktop/src-tauri/gen/android/keystore.properties <<EOF
+          storeFile=$PWD/.android-signing/kuaiban-release.keystore
+          storePassword=$KS_PW
+          keyAlias=$KS_ALIAS
+          keyPassword=$KS_PW
+          EOF
+          echo "签名密钥已就位（内容不打印）"
+
+      - name: 打包 APK
+        run: pnpm --filter @kuaiban/desktop exec tauri android build --apk
+
+      - name: 收集 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: kuaiban-android-apk
+          path: apps/desktop/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+
+      # 安卓也校验一下签名，避免发出"签名不对、装不上"的包
+      - name: 校验签名
+        run: |
+          APK=$(find apps/desktop/src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -1)
+          echo "产物: $APK"
+          $ANDROID_HOME/build-tools/*/apksigner verify --print-certs "$APK" | head -3
+
   server-image:
     # ─────────────────────────────────────────────────────────
     # 服务端镜像也在这里一起构建 —— **这是让"后台一键升级"能用的关键**
