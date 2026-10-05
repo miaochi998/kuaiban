@@ -630,6 +630,47 @@ test("点待办内容打开编辑面板", async ({ page }) => {
   await expect(page.locator(".es-title-input")).toHaveValue("买咖啡豆");
 });
 
+
+/**
+ * 用新的「日期时间」选择器选一个时刻。
+ *
+ * 面板是自建的（`.dtp-*`），日期与时间在同一个面板里切换：
+ * 点「选择时间」切到时分两列，点具体的时/分，再点「确定」。
+ */
+async function pickTime(page: Page, hour: number, minute: number): Promise<void> {
+  await page.locator(".es-time-btn").click();
+  await page.locator(".dtp").waitFor();
+  await page.locator(".dtp-chip", { hasText: "选择时间" }).click();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  await page.locator(".dtp-col").first().locator(".dtp-num", { hasText: new RegExp(`^${pad(hour)}$`) }).click();
+  await page.locator(".dtp-col").nth(1).locator(".dtp-num", { hasText: new RegExp(`^${pad(minute)}$`) }).click();
+  await page.locator(".dtp-ok").click();
+}
+
+
+/**
+ * 用新的「日期时间」选择器选一个具体日子（`YYYY-MM-DD`）。
+ * 需要时就翻月 —— 日历是单月的，跨月要自己翻。
+ */
+async function pickDate(page: Page, key: string): Promise<void> {
+  await page.locator(".es-time-btn").click();
+  await page.locator(".dtp").waitFor();
+
+  const want = `${Number(key.slice(0, 4))}年${Number(key.slice(5, 7))}月`;
+  for (let i = 0; i < 24; i++) {
+    const label = (await page.locator(".dtp-month-label").textContent())?.trim();
+    if (label === want) break;
+    // 比较"年月"决定往前还是往后翻，避免只看月份数字翻错方向
+    const cur = Number((label ?? "").replace("年", "").replace("月", ""));
+    const tgt = Number(want.replace("年", "").replace("月", ""));
+    await page.locator(".dtp-nav", { hasText: cur > tgt ? "‹" : "›" }).first().click();
+  }
+
+  const day = Number(key.slice(8));
+  await page.locator(".dtp-day", { hasText: new RegExp(`^${day}$`) }).first().click();
+  await page.locator(".dtp-ok").click();
+}
+
 test("给原本没时间的待办补上时间（用户问的第一件事）", async ({ page }) => {
   const errors = collectErrors(page);
 
@@ -637,11 +678,7 @@ test("给原本没时间的待办补上时间（用户问的第一件事）", as
   await page.press(".add", "Enter");
   await page.locator(".row", { hasText: "买咖啡豆" }).locator(".body").click();
 
-  // 时间改成点选：先展开选择器，再点「9 点」「30 分」
-  await page.locator(".es-time-btn").click();
-  await page.locator(".es-picker").waitFor();
-  await page.locator(".es-picker-grid").first().locator(".es-chip", { hasText: /^9$/ }).click();
-  await page.locator(".es-picker-grid").nth(1).locator(".es-chip", { hasText: /^30$/ }).click();
+  await pickTime(page, 9, 30);
   await expect(page.locator(".es-time-btn")).toContainText("09:30");
 
   await page.locator(".es-btn.primary").click();
@@ -685,11 +722,8 @@ test("编辑面板：时间是点选的，不存在「写错格式」这回事",
   await page.press(".add", "Enter");
   await page.locator(".row", { hasText: "开会" }).locator(".body").click();
 
-  await page.locator(".es-time-btn").click();
-  await page.locator(".es-picker").waitFor();
-  // 24 小时都在，选一个边界值也不该出问题
-  await page.locator(".es-picker-grid").first().locator(".es-chip", { hasText: /^23$/ }).click();
-  await page.locator(".es-picker-grid").nth(1).locator(".es-chip", { hasText: /^55$/ }).click();
+  // 分钟现在有完整的 0–59，选一个边界值也不该出问题
+  await pickTime(page, 23, 55);
   await expect(page.locator(".es-time-btn")).toContainText("23:55");
   await expect(page.locator(".es-error")).toHaveCount(0);
 
@@ -705,7 +739,12 @@ test("编辑面板：时间可以一键设为全天（回到不设时间）", as
   await page.locator(".row", { hasText: "喝水" }).locator(".body").click();
 
   await expect(page.locator(".es-time-btn")).toContainText("09:30");
-  await page.locator(".es-chip", { hasText: "设为全天" }).click();
+  // 「设为全天」现在在选择器面板里
+  await page.locator(".es-time-btn").click();
+  await page.locator(".dtp").waitFor();
+  await page.locator(".dtp-chip", { hasText: "选择时间" }).click();
+  await page.locator(".dtp-chip", { hasText: "设为全天" }).click();
+  await page.locator(".dtp-ok").click();
   await expect(page.locator(".es-time-btn")).toContainText("全天");
 
   await page.locator(".es-btn.primary").click();
@@ -936,7 +975,7 @@ test("逾期行悬停后同时有「完成」和「搬今天」", async ({ page 
   const key = `${past.getFullYear()}-${String(past.getMonth() + 1).padStart(2, "0")}-${String(past.getDate()).padStart(2, "0")}`;
 
   await page.locator(".row", { hasText: "拖了很久的事" }).locator(".body").click();
-  await page.locator(".es-date").fill(key);
+  await pickDate(page, key);
   await page.locator(".es-btn.primary").click();
 
   const row = page.locator(".row", { hasText: "拖了很久的事" });
