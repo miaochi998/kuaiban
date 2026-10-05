@@ -637,7 +637,13 @@ test("给原本没时间的待办补上时间（用户问的第一件事）", as
   await page.press(".add", "Enter");
   await page.locator(".row", { hasText: "买咖啡豆" }).locator(".body").click();
 
-  await page.locator(".es-time").fill("09:30");
+  // 时间改成点选：先展开选择器，再点「9 点」「30 分」
+  await page.locator(".es-time-btn").click();
+  await page.locator(".es-picker").waitFor();
+  await page.locator(".es-picker-grid").first().locator(".es-chip", { hasText: /^9$/ }).click();
+  await page.locator(".es-picker-grid").nth(1).locator(".es-chip", { hasText: /^30$/ }).click();
+  await expect(page.locator(".es-time-btn")).toContainText("09:30");
+
   await page.locator(".es-btn.primary").click();
 
   await expect(page.locator(".edit-sheet")).toHaveCount(0);
@@ -670,14 +676,41 @@ test("编辑面板：选每周却没选星期几时不给保存", async ({ page 
   await expect(page.locator(".es-btn.primary")).toBeDisabled();
 });
 
-test("编辑面板：时间写错会提示，也保存不了", async ({ page }) => {
+test("编辑面板：时间是点选的，不存在「写错格式」这回事", async ({ page }) => {
+  // 这条测试原来是"填 25:99 → 提示格式错误"。
+  // 时间改成点选之后，**用户根本没有机会点出一个非法时间** ——
+  // 这条测试的前提消失了，于是换成验证点选本身是对的。
+  const errors = collectErrors(page);
   await page.fill(".add", "开会");
   await page.press(".add", "Enter");
   await page.locator(".row", { hasText: "开会" }).locator(".body").click();
 
-  await page.locator(".es-time").fill("25:99");
-  await expect(page.locator(".es-error")).toContainText("时间格式");
-  await expect(page.locator(".es-btn.primary")).toBeDisabled();
+  await page.locator(".es-time-btn").click();
+  await page.locator(".es-picker").waitFor();
+  // 24 小时都在，选一个边界值也不该出问题
+  await page.locator(".es-picker-grid").first().locator(".es-chip", { hasText: /^23$/ }).click();
+  await page.locator(".es-picker-grid").nth(1).locator(".es-chip", { hasText: /^55$/ }).click();
+  await expect(page.locator(".es-time-btn")).toContainText("23:55");
+  await expect(page.locator(".es-error")).toHaveCount(0);
+
+  await page.locator(".es-btn.primary").click();
+  await expect(page.locator(".row", { hasText: "开会" }).locator(".time")).toHaveText("23:55");
+  expect(errors).toEqual([]);
+});
+
+test("编辑面板：时间可以一键设为全天（回到不设时间）", async ({ page }) => {
+  const errors = collectErrors(page);
+  await page.fill(".add", "9:30 喝水");
+  await page.press(".add", "Enter");
+  await page.locator(".row", { hasText: "喝水" }).locator(".body").click();
+
+  await expect(page.locator(".es-time-btn")).toContainText("09:30");
+  await page.locator(".es-chip", { hasText: "设为全天" }).click();
+  await expect(page.locator(".es-time-btn")).toContainText("全天");
+
+  await page.locator(".es-btn.primary").click();
+  await expect(page.locator(".row", { hasText: "喝水" }).locator(".time")).toHaveCount(0);
+  expect(errors).toEqual([]);
 });
 
 test("编辑面板：可以取消，不改动任何东西", async ({ page }) => {

@@ -41,6 +41,41 @@ const emit = defineEmits<{
 const title = ref(props.todo.title);
 const date = ref<DateKey | null>(props.todo.date);
 const timeText = ref<TimeOfDay | "">(props.todo.time ?? "");
+
+/**
+ * 时间不再让用户手打，改成点选。
+ *
+ * ## 为什么换掉文本输入
+ *
+ * 文本输入要求用户"写对格式"：全角冒号、`9点`、`下午2点半`、中间多打一个空格……
+ * 每一样都可能被判非法。**而这些负担其实没必要由用户承担** —— 时间就那么多种，
+ * 点选比手打更快、也永远不会错。
+ *
+ * 需要"随手写时间"的场景并没有丢：**主输入框**（"9:30 交周报"）
+ * 仍然支持自然语言解析，那是最高频的入口。
+ */
+const showTimePicker = ref(false);
+const HOURS = Array.from({ length: 24 }, (_, i) => i);
+/** 分钟按 5 分钟一档；需要更细的分钟时用右侧的 ±1 微调 */
+const MINUTES = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
+
+const pickedHour = computed(() => {
+  const t = normalizeTimeOfDay(timeText.value);
+  return t ? Number(t.slice(0, 2)) : 9;
+});
+const pickedMinute = computed(() => {
+  const t = normalizeTimeOfDay(timeText.value);
+  return t ? Number(t.slice(3, 5)) : 0;
+});
+
+function setTime(hour: number, minute: number): void {
+  timeText.value = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}` as TimeOfDay;
+}
+
+function nudgeMinute(delta: number): void {
+  const total = (pickedHour.value * 60 + pickedMinute.value + delta + 1440) % 1440;
+  setTime(Math.floor(total / 60), total % 60);
+}
 const repeatKind = ref<RepeatRule["kind"]>(props.todo.repeat.kind);
 const weekdays = ref<IsoWeekday[]>(
   props.todo.repeat.kind === "weekly" ? [...props.todo.repeat.weekdays] : [],
@@ -61,12 +96,11 @@ const WEEK_LABELS: { value: IsoWeekday; label: string }[] = [
 
 const tomorrow = computed(() => addDays(props.businessDate, 1));
 
-/** 时间输入非法时给个提示，而不是默默丢掉 */
-const timeError = computed(() => {
-  const raw = timeText.value.trim();
-  if (raw === "") return "";
-  return normalizeTimeOfDay(raw) ? "" : "时间格式不对，像 9:30 这样写";
-});
+/**
+ * 时间不再有"格式错误"这种状态 —— 用户是点选的，不可能点错。
+ * 保留一个恒为空的变量，是为了不改动下面 canSave 的判定结构。
+ */
+const timeError = computed(() => "");
 
 /** 重复规则是否已经选齐（每周要选到星期几、每月要填到几号） */
 const repeatError = computed(() => {
@@ -185,18 +219,58 @@ const preview = computed(() => {
       </div>
       <input v-model="date" class="es-input small es-date" type="date" />
 
-      <!-- 时间 -->
+      <!-- 时间：点选，不手打 -->
       <div class="es-row">
         <span class="es-label">时间</span>
-        <span class="es-hint">留空 = 全天事项，不逐条提醒</span>
+        <span class="es-hint">不设 = 全天事项，不逐条提醒</span>
       </div>
-      <input
-        v-model="timeText"
-        class="es-input small es-time"
-        type="text"
-        placeholder="9:30（也可以用 9点 / 下午2点半）"
-      />
-      <p v-if="timeError" class="es-error">{{ timeError }}</p>
+
+      <!-- 收起态：一行显示当前时间，点开选 -->
+      <div class="es-time-row">
+        <button class="es-time-btn" type="button" @click="showTimePicker = !showTimePicker">
+          <span :class="{ 'es-time-off': !timeText }">{{ timeText || "全天" }}</span>
+          <span class="es-caret">{{ showTimePicker ? "▲" : "▼" }}</span>
+        </button>
+        <button
+          v-if="timeText"
+          class="es-chip"
+          type="button"
+          @click="timeText = ''"
+        >设为全天</button>
+      </div>
+
+      <!-- 展开态：小时 / 分钟点选，加 5 分钟微调 -->
+      <div v-if="showTimePicker" class="es-picker">
+        <div class="es-picker-label">几点</div>
+        <div class="es-picker-grid">
+          <button
+            v-for="h in HOURS"
+            :key="h"
+            class="es-chip tiny"
+            :class="{ on: pickedHour === h }"
+            type="button"
+            @click="setTime(h, pickedMinute)"
+          >{{ h }}</button>
+        </div>
+
+        <div class="es-picker-label">几分</div>
+        <div class="es-picker-grid">
+          <button
+            v-for="m in MINUTES"
+            :key="m"
+            class="es-chip tiny"
+            :class="{ on: pickedMinute === m }"
+            type="button"
+            @click="setTime(pickedHour, m)"
+          >{{ String(m).padStart(2, "0") }}</button>
+        </div>
+
+        <div class="es-time-row" style="margin-top: 8px">
+          <button class="es-chip" type="button" @click="nudgeMinute(-5)">−5 分钟</button>
+          <button class="es-chip" type="button" @click="nudgeMinute(5)">+5 分钟</button>
+          <button class="es-chip" type="button" @click="setTime(pickedHour, 0)">整点</button>
+        </div>
+      </div>
 
       <!-- 重复 -->
       <div class="es-row">
@@ -345,6 +419,64 @@ const preview = computed(() => {
 
 .es-sub {
   margin-top: 6px;
+}
+
+.es-time-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.es-time-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border: 1px solid #e3e7ec;
+  border-radius: 8px;
+  background: #fbfcfd;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.es-time-btn:hover {
+  border-color: #c9d3df;
+}
+
+.es-time-off {
+  color: #9aa4b2;
+}
+
+.es-caret {
+  font-size: 10px;
+  color: #9aa4b2;
+}
+
+.es-picker {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid #e3e7ec;
+  border-radius: 10px;
+  background: #fbfcfd;
+}
+
+.es-picker-label {
+  margin: 6px 0 4px;
+  font-size: 12px;
+  color: #8b94a1;
+}
+
+.es-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+}
+
+.es-chip.tiny {
+  padding: 5px 0;
+  font-size: 12px;
 }
 
 .es-chip {
