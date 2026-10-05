@@ -5,6 +5,18 @@
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
+        <!-- 到点提醒相关权限。缺一个都会导致"到点不响"，且各版本要求不同：
+           · POST_NOTIFICATIONS    Android 13+ 发通知必须运行时申请
+           · SCHEDULE_EXACT_ALARM  Android 12+ 精确闹钟（否则只能给不精确的）
+           · USE_EXACT_ALARM       Android 13+ 允许"闹钟类"应用直接用精确闹钟
+           · RECEIVE_BOOT_COMPLETED 重启后能重新排闹钟，否则重启一次提醒就全丢
+           · VIBRATE               提醒时震动 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <application
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"

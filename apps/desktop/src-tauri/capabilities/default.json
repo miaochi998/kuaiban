@@ -1,18 +1,26 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Capability for the main window（桌面与移动端共用）",
   "windows": [
     "main"
   ],
   "permissions": [
     "core:default",
     "opener:default",
+    "notification:default",
     "sql:allow-load",
     "sql:allow-select",
     "sql:allow-execute",
     "updater:default",
     "process:allow-restart",
     "core:app:allow-version"
+  ],
+  "platforms": [
+    "linux",
+    "macOS",
+    "windows",
+    "android",
+    "iOS"
   ]
 }

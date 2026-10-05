@@ -730,6 +730,13 @@ pub fn run() {
 
     let builder = builder.plugin(tauri_plugin_opener::init());
 
+    // 通知插件：**桌面与安卓都注册**，但只有移动端会用它发通知 ——
+    // 注册本身不产生任何行为，所以桌面端（已验收）不受影响。
+    //
+    // 安卓上它还有个关键作用：**定时通知底层走 AlarmManager**，
+    // 也就是"应用被杀掉也能到点响"的那种闹钟，而不是靠应用活着。
+    let builder = builder.plugin(tauri_plugin_notification::init());
+
     // 在线更新（Tauri updater）与"重启应用"都是桌面专属。
     // **Android 上的更新走另一条路**：下载 APK 再交给系统安装。
     #[cfg(desktop)]
