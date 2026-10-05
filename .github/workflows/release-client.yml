@@ -168,7 +168,15 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - uses: android-actions/setup-android@v3
+      # 不用 android-actions/setup-android：ubuntu runner 本来就预装了 Android SDK，
+      # 而那个 action 会因为【SDK 许可未接受】直接失败：
+      #   sdkmanager failed with exit code 1  ("you must agree to the following terms")
+      # 这里的顺序很关键：**先接受许可，再装 NDK**，否则装包同样会被许可挡住。
+      - name: 接受 Android SDK 许可
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          echo "许可已接受"
 
       # NDK 要显式装：runner 上装的版本未必是 Tauri 需要的那个
       - name: 安装 Android NDK
