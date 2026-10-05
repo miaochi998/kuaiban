@@ -172,15 +172,25 @@ jobs:
       # 而那个 action 会因为【SDK 许可未接受】直接失败：
       #   sdkmanager failed with exit code 1  ("you must agree to the following terms")
       # 这里的顺序很关键：**先接受许可，再装 NDK**，否则装包同样会被许可挡住。
-      - name: 接受 Android SDK 许可
+      # runner 上 sdkmanager **不在 PATH 里**（实测报 command not found 127），
+      # 所以要自己找出来用全路径。
+      # ⚠️ 这里刻意**不写 `|| true`** —— 上一版就是因为它把"命令找不到"的失败吞掉了，
+      #    于是那一步"看起来通过"，问题被推到下一步才暴露，白跑了一轮。
+      - name: 接受 Android SDK 许可并安装 NDK
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          echo "许可已接受"
-
-      # NDK 要显式装：runner 上装的版本未必是 Tauri 需要的那个
-      - name: 安装 Android NDK
-        run: sdkmanager "ndk;28.2.13676358" > /dev/null
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMGR=$(ls "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          if [ -z "$SDKMGR" ]; then
+            echo "找不到 sdkmanager，内容如下："
+            ls -la "$SDK_ROOT/cmdline-tools" || true
+            exit 1
+          fi
+          echo "sdkmanager: $SDKMGR"
+          yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true   # 许可已全接受时也会返回非 0
+          "$SDKMGR" "ndk;28.2.13676358"
+          echo "NDK 安装完成"
+          echo "NDK_HOME=$SDK_ROOT/ndk/28.2.13676358" >> "$GITHUB_ENV"
 
       - run: pnpm install --frozen-lockfile
 
