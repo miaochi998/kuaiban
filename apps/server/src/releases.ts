@@ -307,8 +307,19 @@ export class ReleaseStore {
 
     const platforms: Record<string, { signature: string; url: string }> = {};
 
-    // 自动更新的包：macOS 是 .app.tar.gz、Windows 是 .nsis.zip
-    const updaterAssets = release.assets.filter((a) => /\.(app\.tar\.gz|nsis\.zip)$/i.test(a.name));
+    // 自动更新的包：
+    //   macOS   → `.app.tar.gz`（Tauri 另外打的更新包）
+    //   Windows → **安装器本身**（`.exe` / `.msi`）！
+    //
+    // ⚠️ 这里曾经只认 `.app.tar.gz` 和 `.nsis.zip`，而 Windows 构建
+    // **根本不会产出 `.nsis.zip`** —— 它只产出 `xxx-setup.exe` + `.exe.sig`
+    // 与 `xxx.msi` + `.msi.sig`。于是清单里永远只有 macOS，
+    // Windows 客户端一检查更新就报：
+    //   None of the fallback platforms ["windows-x86_64-msi", "windows-x86_64"]
+    //   were found in the response `platforms` object
+    const updaterAssets = release.assets.filter((a) =>
+      /\.(app\.tar\.gz|nsis\.zip|exe|msi)$/i.test(a.name),
+    );
     if (updaterAssets.length === 0) return null;
 
     for (const asset of updaterAssets) {
@@ -357,6 +368,11 @@ export class ReleaseStore {
     if (/\.nsis\.zip$/i.test(name)) {
       return /arm64|aarch64/i.test(name) ? "windows-aarch64" : "windows-x86_64";
     }
+    // Windows 的更新包就是安装器本身。Tauri 客户端在 Windows 上会依次找
+    // `windows-x86_64-msi` 和 `windows-x86_64`，所以两种都要给：
+    // NSIS 安装器 → windows-x86_64；MSI 安装器 → windows-x86_64-msi。
+    if (/\.exe$/i.test(name)) return "windows-x86_64";
+    if (/\.msi$/i.test(name)) return "windows-x86_64-msi";
     return null;
   }
 

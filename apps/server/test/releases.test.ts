@@ -286,3 +286,53 @@ describe("发新版本后不能继续发旧文件", () => {
     }
   });
 });
+
+describe("Windows 也要有更新条目（真机报错暴露）", () => {
+  it("Windows 的更新包是安装器本身，不是 .nsis.zip", async () => {
+    // 真机报错：None of the fallback platforms
+    // ["windows-x86_64-msi", "windows-x86_64"] were found ...
+    // 根因：Windows 构建只产出 xxx-setup.exe + .exe.sig 与 xxx.msi + .msi.sig，
+    // **根本不产出 .nsis.zip**，而清单只认 .app.tar.gz / .nsis.zip。
+    const store = new ReleaseStore({
+      dir: mkdtempSync(join(tmpdir(), "kb-win-")),
+      origin: "https://kuaiban.bonnei.com",
+      githubRepo: "me/kuaiban",
+    });
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("/releases")) {
+        return new Response(
+          JSON.stringify([{
+            tag_name: "v0.1.13",
+            published_at: "2026-10-05T00:00:00Z",
+            body: "",
+            assets: [
+              { name: "KuaiBan_0.1.13_x64-setup.exe", url: "https://api.github.com/a/1",
+                browser_download_url: "x", size: 2613543 },
+              { name: "KuaiBan_0.1.13_x64-setup.exe.sig", url: "https://api.github.com/a/2",
+                browser_download_url: "x", size: 436 },
+              { name: "KuaiBan_0.1.13_x64_en-US.msi", url: "https://api.github.com/a/3",
+                browser_download_url: "x", size: 3457024 },
+              { name: "KuaiBan_0.1.13_x64_en-US.msi.sig", url: "https://api.github.com/a/4",
+                browser_download_url: "x", size: 436 },
+            ],
+          }]),
+          { status: 200 },
+        );
+      }
+      return new Response("sig-content", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    try {
+      await store.refresh(true);
+      const m = store.updaterManifest()!;
+      // Tauri 在 Windows 上依次找这两个 key
+      expect(m.platforms["windows-x86_64"]?.url).toContain("KuaiBan_0.1.13_x64-setup.exe");
+      expect(m.platforms["windows-x86_64-msi"]?.url).toContain("KuaiBan_0.1.13_x64_en-US.msi");
+      expect(m.platforms["windows-x86_64"]?.signature).toBeTruthy();
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
