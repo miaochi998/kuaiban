@@ -84,3 +84,6 @@ PROJECT_MEMORY.md
 
 # Android 发布签名密钥：绝不能提交
 .android-signing/
+
+# 临时二维码图片
+.tmp-qr/

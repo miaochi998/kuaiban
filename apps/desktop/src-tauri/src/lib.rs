@@ -17,6 +17,7 @@
 //!     用户正在用的窗口夺走焦点 —— 那这个软件就没法用了。
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+#[cfg(desktop)]
 use std::time::Duration;
 
 // 托盘与系统菜单只在桌面端存在（Android 上没有这两样），单独一组导入。
@@ -39,17 +40,21 @@ const PANEL_WIDTH: f64 = 340.0;
 /// 面板最大高度（逻辑像素），实际取屏幕高度的 80% 与它的小值
 const PANEL_MAX_HEIGHT: f64 = 560.0;
 /// 收起时露在屏幕右侧的窄条宽度（逻辑像素），也是悬停命中区的宽度
+#[cfg(desktop)]
 const STRIP_WIDTH: f64 = 12.0;
 /// 收起时**可见**窄条的高度（逻辑像素）。
 ///
 /// ⚠️ 跨层契约：必须与 `apps/desktop/src/App.vue` 里 `.strip { height: 152px }` 保持一致。
 /// 改一个必须同时改另一个 —— 否则"看得见的窄条"与"能触发悬停的区域"会对不上，
 /// 表现为「鼠标明明没碰到窄条，面板却自己弹出来了」。
+#[cfg(desktop)]
 const STRIP_HEIGHT: f64 = 152.0;
 /// 悬停命中区在窄条上下各外扩的手感容差（逻辑像素）。
 /// 纯粹是为了让鼠标不至于因为差一两个像素就悬停不上，不宜放大。
+#[cfg(desktop)]
 const STRIP_HIT_PADDING: f64 = 8.0;
 /// 鼠标坐标轮询间隔（毫秒）
+#[cfg(desktop)]
 const POLL_INTERVAL_MS: u64 = 80;
 /// 兜底收起阈值：面板展开、未钉住，但鼠标**连续**在窗口外超过这么久（毫秒）→ 强制收起。
 ///
@@ -59,10 +64,13 @@ const POLL_INTERVAL_MS: u64 = 80;
 ///
 /// ⚠️ 必须**明显大于**前端 `App.vue` 里的 `COLLAPSE_DELAY_MS`(1500ms)，
 /// 否则会抢在前端正常收起之前把面板收掉，破坏「移开 1.5 秒才收起」的手感。这里取 2 倍。
+#[cfg(desktop)]
 const OUTSIDE_COLLAPSE_MS: u64 = 3_000;
 /// 把上面的毫秒阈值折算成轮询次数（3000 / 80 = 38 次）
+#[cfg(desktop)]
 const OUTSIDE_STREAK_LIMIT: u32 = OUTSIDE_COLLAPSE_MS.div_ceil(POLL_INTERVAL_MS) as u32;
 /// 判定「鼠标在窗口之外」时预留的余量（逻辑像素），避免鼠标贴着边缘时来回抖动
+#[cfg(desktop)]
 const OUTSIDE_MARGIN: f64 = 24.0;
 
 // ─────────────────────────────────────────────────────────────
@@ -140,6 +148,8 @@ fn apply_layout(window: &WebviewWindow) {
 // 展开 / 收起
 // ─────────────────────────────────────────────────────────────
 
+// 安卓上里面那个 window 只被「鼠标穿透」用，而那是桌面的 —— 不需要它就别报未使用
+#[cfg_attr(mobile, allow(unused_variables))]
 fn set_expanded_inner(app: &AppHandle, expanded: bool) {
     let state = app.state::<WidgetState>();
 
@@ -234,6 +244,7 @@ fn set_activatable(app: AppHandle, activatable: bool) {
 // 轮询 80ms 一次，代价极低，而且能顺便支持"鼠标在屏幕最右边缘"这种更宽的命中区。
 // ─────────────────────────────────────────────────────────────
 
+#[cfg(desktop)]
 fn spawn_hover_watcher(app: AppHandle) {
     // 「鼠标连续在窗口之外」的轮询计数，只服务于兜底收起（见 OUTSIDE_STREAK_LIMIT）
     let mut outside_streak: u32 = 0;
@@ -554,7 +565,8 @@ fn ensure_non_activating(window: &WebviewWindow) {
     apply_non_activating(hwnd, true);
 }
 
-#[cfg(not(windows))]
+// 空实现只在「桌面但非 Windows」时才有意义（macOS 用 ActivationPolicy）
+#[cfg(all(desktop, not(windows)))]
 fn ensure_non_activating(_window: &WebviewWindow) {}
 
 // ─────────────────────────────────────────────────────────────
