@@ -210,7 +210,25 @@ fn set_pinned(app: AppHandle, pinned: bool) {
 
 #[tauri::command]
 fn get_status(app: AppHandle) -> WidgetStatus {
-    app.state::<WidgetState>().status()
+    #[allow(unused_mut)]
+    let mut status = app.state::<WidgetState>().status();
+
+    // ── 安卓：面板【永远展开、永不自动收起】──────────────────────
+    //
+    // 桌面端那套是「贴屏幕边缘的小条 + 鼠标悬停展开」，靠 Rust 轮询鼠标坐标实现。
+    // **安卓没有鼠标，也就没有悬停** —— 真机实测的表现是：
+    //   能打开、右侧能看到那条蓝条（说明界面其实渲染出来了），
+    //   但面板处于收起态 ⇒ 一片白，点也没反应。
+    //
+    // 所以安卓上直接恒为「展开 + 钉住」。
+    // 置 `pinned` 是关键：前端 `scheduleCollapse()` 第一行就是
+    // `if (pinned.value) return;` —— 所有自动收起都被它挡掉，**前端不用改一行**。
+    #[cfg(mobile)]
+    {
+        status.expanded = true;
+        status.pinned = true;
+    }
+    status
 }
 
 /// 有未处理的到点提醒时由前端置位，避免面板被"鼠标移开 3 秒"的兜底收起。
