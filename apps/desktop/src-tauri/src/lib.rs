@@ -19,9 +19,14 @@
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::time::Duration;
 
+// 托盘与系统菜单只在桌面端存在（Android 上没有这两样），单独一组导入。
+#[cfg(desktop)]
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+};
+
+use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, WindowEvent,
 };
 use tauri_plugin_sql::{Migration, MigrationKind};
@@ -553,6 +558,7 @@ fn ensure_non_activating(_window: &WebviewWindow) {}
 // 系统托盘
 // ─────────────────────────────────────────────────────────────
 
+#[cfg(desktop)]
 /// 托盘「显示 / 隐藏面板」菜单项与托盘图标左键点击的**统一**行为。
 ///
 /// 语义约定（用户已拍板）：**从托盘显式显示面板 = 钉住**。
@@ -574,6 +580,7 @@ fn tray_toggle(app: &AppHandle) {
     }
 }
 
+#[cfg(desktop)]
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let toggle = MenuItemBuilder::with_id("toggle", "显示 / 隐藏面板").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "退出快办").build(app)?;
