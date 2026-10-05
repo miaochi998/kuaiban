@@ -10,7 +10,7 @@
  * 不拆成"改时间""改重复"多个入口 —— 那会让用户为了一件小事翻好几层。
  */
 
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import DateTimePicker from "./DateTimePicker.vue";
 import {
   describeRepeat,
@@ -30,7 +30,14 @@ const props = defineProps<{
   businessDate: DateKey;
 }>();
 
+/**
+ * 告诉上层"面板里有没有未保存的改动"。
+ *
+ * 用途：用户在编辑中途去点「设置」「钉住」时，上层要先问一句
+ * "要放弃编辑吗" —— 不能默默把他的改动丢掉。
+ */
 const emit = defineEmits<{
+  (e: "dirty", value: boolean): void;
   (e: "save", edit: TodoEdit): void;
   (e: "cancel"): void;
   (e: "remove"): void;
@@ -159,6 +166,19 @@ const preview = computed(() => {
   if (r.kind !== "none") parts.push(describeRepeat(r));
   return parts.join(" · ");
 });
+
+/** 面板内容是否已经和原来不一样了 */
+const dirty = computed(() => {
+  const o = props.todo;
+  return (
+    title.value.trim() !== o.title ||
+    date.value !== o.date ||
+    timeText.value !== (o.time ?? "") ||
+    JSON.stringify(buildRepeat()) !== JSON.stringify(o.repeat)
+  );
+});
+
+watch(dirty, (v) => emit("dirty", v), { immediate: true });
 </script>
 
 <template>

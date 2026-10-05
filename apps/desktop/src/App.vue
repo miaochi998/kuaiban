@@ -256,6 +256,42 @@ const {
 
 const showSettings = ref(false);
 
+/**
+ * 编辑面板与设置面板是**互斥的两个整屏面板**，而编辑面板的判断排在前面
+ * （`v-if` 优先）。于是用户在编辑中途点「设置」时：`showSettings` 确实变成了
+ * true，**但编辑面板仍然盖在上面** —— 看起来就是"点了没反应"。
+ *
+ * 用户报过这个问题。**"点了没反应的控件就是坏控件"**，所以要修。
+ *
+ * 修法：编辑器开着且**有未保存改动**时，先把用户想做的事挂起、问一句
+ * "要放弃编辑吗"，由他自己决定 —— 既不丢数据，也不会无反应。
+ * （不能用 `window.confirm`：快办是不抢焦点的浮动面板，系统模态框弹不出来，
+ *   `confirm()` 会直接返回 false。必须用界面内确认。）
+ */
+const editDirty = ref(false);
+const pendingAction = ref<(() => void) | null>(null);
+
+function guardEdit(action: () => void): void {
+  if (editingTodo.value && editDirty.value) {
+    pendingAction.value = action;
+    return;
+  }
+  editingTodo.value = null;
+  action();
+}
+
+function confirmDiscardEdit(): void {
+  const action = pendingAction.value;
+  pendingAction.value = null;
+  editingTodo.value = null;
+  action?.();
+}
+
+function cancelDiscardEdit(): void {
+  pendingAction.value = null;
+}
+
+
 // ── 账号与同步（离线优先：不登录也能正常用，只是不同步）──
 const account = useAccountStore();
 const sync = useSyncStore();
@@ -509,27 +545,43 @@ function shiftMonth(delta: number) {
           :class="syncHint.tone"
           type="button"
           :title="syncHint.title"
-          @click="showSettings = true"
+          @click="guardEdit(() => (showSettings = true))"
         ></button>
         <button
           class="head-icon"
           type="button"
           title="设置"
           :class="{ on: showSettings }"
-          @click="showSettings = !showSettings"
+          @click="guardEdit(() => (showSettings = !showSettings))"
         >⚙</button>
         <button
           class="pin"
           :class="{ on: pinned }"
           type="button"
           :title="pinned ? '取消钉住' : '钉住（鼠标移开也不收起）'"
-          @click="togglePin"
+          @click="guardEdit(togglePin)"
         >📌</button>
       </header>
+
+      <!--
+        编辑未保存时的确认条。
+
+        ⚠️ 位置很关键：**必须放在 `v-if/v-else-if/v-else` 这条链之外**。
+        曾经把它插在 <SettingsPanel v-else-if> 和 <template v-else> 之间，
+        结果那个 v-else 被它抢走了 —— 主内容从此只跟 pendingAction 配对，
+        不再受"设置是否打开"控制，设置打开时提醒卡片仍然渲染（测试直接挂了）。
+        放在这里（EditSheet 之前）就没这个问题：它自己开一条链。
+      -->
+      <div v-if="pendingAction" class="guard-bar">
+        <span class="guard-text">编辑还没保存，要放弃吗？</span>
+        <button class="guard-btn" type="button" @click="cancelDiscardEdit">继续编辑</button>
+        <button class="guard-btn danger" type="button" @click="confirmDiscardEdit">放弃并继续</button>
+      </div>
 
       <!-- 编辑中：整块换成编辑面板，避免 340px 里塞两套界面 -->
       <EditSheet
         v-if="editingTodo"
+        @dirty="editDirty = $event"
         :todo="editingTodo"
         :business-date="view.businessDate"
         @save="onSaveEdit"
@@ -1295,6 +1347,43 @@ body {
 }
 
 /* 头部图标按钮。原来 15px 太小不好点，放大到 26px */
+.guard-bar {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid #f1d08a;
+  border-radius: 10px;
+  background: #fffbef;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 12%);
+}
+
+.guard-text {
+  flex: 1;
+  font-size: 12px;
+  color: #8a6d1f;
+}
+
+.guard-btn {
+  padding: 4px 10px;
+  border: 1px solid #e3d5ac;
+  border-radius: 7px;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.guard-btn.danger {
+  border-color: #e8b4b4;
+  color: #b3261e;
+}
+
 .head-icon,
 .pin {
   width: 26px;

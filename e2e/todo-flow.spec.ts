@@ -1124,3 +1124,50 @@ test("更新是后台悄悄做的，正常时不占地方", async ({ page }) => 
   // 进度条也只在下载时出现
   await expect(page.locator(".sp-progress")).toHaveCount(0);
 });
+
+test("编辑到一半去点设置：不会没反应，也不会默默丢掉改动", async ({ page }) => {
+  // 用户报过：编辑面板打开时点「设置」「钉住」，看不到对应面板 ——
+  // 因为编辑面板与设置面板是互斥的整屏面板，而编辑器的判断排在前面。
+  // 「点了没反应的控件就是坏控件」，所以要先问一句，由用户决定。
+  const errors = collectErrors(page);
+  await page.fill(".add", "会被改的事");
+  await page.press(".add", "Enter");
+  await page.locator(".row", { hasText: "会被改的事" }).locator(".body").click();
+
+  // 改一下，产生未保存的改动
+  await page.locator(".es-title-input").fill("改过的标题");
+
+  // ① 此时点设置：必须给出确认，而不是毫无反应
+  await page.locator(".head-icon").click();
+  await expect(page.locator(".guard-bar")).toBeVisible();
+  await expect(page.locator(".guard-text")).toContainText("放弃");
+
+  // ② 选「继续编辑」→ 回到编辑，改动还在（没有丢数据）
+  await page.locator(".guard-btn", { hasText: "继续编辑" }).click();
+  await expect(page.locator(".es-title-input")).toHaveValue("改过的标题");
+  await expect(page.locator(".guard-bar")).toHaveCount(0);
+
+  // ③ 再点设置并选「放弃并继续」→ 设置面板打开，编辑面板关闭
+  await page.locator(".head-icon").click();
+  await page.locator(".guard-btn", { hasText: "放弃并继续" }).click();
+  await expect(page.locator(".sp-title")).toHaveText("设置");
+  await expect(page.locator(".es-title-input")).toHaveCount(0);
+
+  // 放弃编辑 → 标题保持原样，没被改掉
+  await page.locator(".sp-close").click();
+  await expect(page.locator(".row", { hasText: "会被改的事" })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("编辑面板没改动时点设置，直接切过去（不多问一句）", async ({ page }) => {
+  const errors = collectErrors(page);
+  await page.fill(".add", "只是看看");
+  await page.press(".add", "Enter");
+  await page.locator(".row", { hasText: "只是看看" }).locator(".body").click();
+
+  // 什么都没改 → 不该拿确认条来烦用户
+  await page.locator(".head-icon").click();
+  await expect(page.locator(".guard-bar")).toHaveCount(0);
+  await expect(page.locator(".sp-title")).toHaveText("设置");
+  expect(errors).toEqual([]);
+});
