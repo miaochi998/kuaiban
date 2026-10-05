@@ -107,3 +107,21 @@ describe("时刻", () => {
     expect(toTimeOfDay(new Date("2026-06-15T00:00:00"))).toBe("00:00");
   });
 });
+
+describe("时间里的中文标点要能认", () => {
+  it("全角冒号「：」等价于半角「:」", () => {
+    // 中文输入法下打出的就是这个，用户看着和半角没区别
+    expect(normalizeTimeOfDay("16：30")).toBe("16:30");
+    expect(normalizeTimeOfDay("9：5")).toBe("09:05");
+  });
+
+  it("中间夹空格也认", () => {
+    expect(normalizeTimeOfDay(" 9 : 30 ")).toBe("09:30");
+  });
+
+  it("非法输入照旧返回 null（别放宽过头）", () => {
+    expect(normalizeTimeOfDay("25:00")).toBeNull();
+    expect(normalizeTimeOfDay("abc")).toBeNull();
+    expect(normalizeTimeOfDay("")).toBeNull();
+  });
+});

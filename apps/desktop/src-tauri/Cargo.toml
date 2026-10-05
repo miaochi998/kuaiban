@@ -1,6 +1,6 @@
 [package]
 name = "desktop"
-version = "0.1.13"
+version = "0.1.18"
 description = "快办 — 桌面待办清单"
 authors = ["KuaiBan"]
 edition = "2021"

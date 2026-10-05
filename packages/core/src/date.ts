@@ -134,14 +134,28 @@ export function atTimeOnDate(key: DateKey, time: TimeOfDay): Date | null {
   return d;
 }
 
-/** 把 `HH:mm` 规范化（如 `9:5` → `09:05`）；非法返回 null */
+/**
+ * 把 `HH:mm` 规范化（如 `9:5` → `09:05`）；非法返回 null
+ *
+ * ⚠️ 这里会**先把中文标点换成半角**再判断。
+ * 中文输入法下打出的冒号是「：」（全角），用户看着和「:」没区别，
+ * 但正则只认半角 —— 于是被判"格式不对"。实测用户就是这么被绊住的：
+ * 明明写的是 `16：30`，界面却说格式错。
+ * 同类还有全角句点「．」、全角空格等，一并处理。
+ */
 export function normalizeTimeOfDay(t: string): TimeOfDay | null {
-  const loose = /^(\d{1,2}):(\d{1,2})$/.exec(t.trim());
+  const cleaned = t
+    .trim()
+    .replace(/：/g, ":") // 全角冒号
+    .replace(/[．。]/g, ".") // 全角句点
+    .replace(/\u3000/g, " ") // 全角空格
+    .replace(/\s+/g, ""); // 中间的空格（"9 : 30"）
+  const loose = /^(\d{1,2}):(\d{1,2})$/.exec(cleaned);
   if (loose) {
     const h = Number(loose[1]);
     const min = Number(loose[2]);
     if (h >= 0 && h <= 23 && min >= 0 && min <= 59) return `${pad2(h)}:${pad2(min)}`;
   }
-  const parsed = parseTimeOfDay(t);
-  return parsed ? t : null;
+  const parsed = parseTimeOfDay(cleaned);
+  return parsed ? cleaned : null;
 }

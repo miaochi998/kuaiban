@@ -83,6 +83,55 @@ function togglePin() {
  * Windows 上这是让带 WS_EX_NOACTIVATE 的挂件能收到键盘的唯一办法；
  * 其它平台是空操作，但那个标志仍然要维护 —— Rust 的兜底收起靠它。
  */
+/**
+ * 全局：任何输入控件获得焦点时都申请"临时可激活"。
+ *
+ * ## 为什么必须是全局的
+ *
+ * 原来只在主输入框（"添加今天的事"）上绑了 `@mousedown="grabKeyboard"`，
+ * 于是**只有那一个框能打字**。编辑面板里的标题框、时间框，设置面板里的
+ * 登录框……全都没有这个绑定 —— 而 Windows 挂件平时带 `WS_EX_NOACTIVATE`，
+ * **窗口拿不到键盘焦点，里面的输入框就完全点不进去、打字也没反应**。
+ *
+ * 实测表现：Windows 上点编辑面板的时间框，**光标都进不去**（不是格式问题）。
+ * 用户最先碰到的是时间框，但这其实是**所有输入框**的问题。
+ *
+ * 改成在 document 上监听 `focusin`（捕获阶段），**任何**输入控件获得焦点
+ * 都能触发，以后新增输入框也不会再漏。
+ */
+function isTextEntry(el: EventTarget | null): boolean {
+  const node = el as HTMLElement | null;
+  if (!node || !node.tagName) return false;
+  return (
+    node.tagName === "INPUT" ||
+    node.tagName === "TEXTAREA" ||
+    node.isContentEditable === true
+  );
+}
+
+function onAnyFocusIn(e: FocusEvent) {
+  if (isTextEntry(e.target)) void grabKeyboard();
+}
+
+/**
+ * 按下鼠标就要申请可激活 —— **不能只靠 focusin**。
+ *
+ * 关键区别：Windows 挂件带 `WS_EX_NOACTIVATE` 时，**点了输入框它可能根本
+ * 不会获得焦点**，`focusin` 也就不会触发。而 `mousedown` 发生在焦点之前，
+ * 一定能收到 —— 这正是在主输入框上用 `@mousedown="grabKeyboard"` 的原因。
+ *
+ * 所以两个都监听：mousedown 负责"点下去就把窗口变成可激活"，
+ * focusin 负责覆盖键盘 Tab 切焦点等没有鼠标点击的情况。
+ */
+function onAnyMouseDown(e: MouseEvent) {
+  if (isTextEntry(e.target)) void grabKeyboard();
+}
+
+function onAnyFocusOut() {
+  releaseKeyboard();
+  scheduleCollapse();
+}
+
 async function grabKeyboard() {
   try {
     await invoke("set_activatable", { activatable: true });
@@ -112,6 +161,11 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 onMounted(async () => {
+  // 捕获阶段监听：任何输入框获得焦点都要能打字（见 onAnyFocusIn 的说明）
+  document.addEventListener("mousedown", onAnyMouseDown, true);
+  document.addEventListener("focusin", onAnyFocusIn, true);
+  document.addEventListener("focusout", onAnyFocusOut, true);
+
   try {
     const status = await invoke<WidgetStatus>("get_status");
     expanded.value = status.expanded;
@@ -160,6 +214,9 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  document.removeEventListener("mousedown", onAnyMouseDown, true);
+  document.removeEventListener("focusin", onAnyFocusIn, true);
+  document.removeEventListener("focusout", onAnyFocusOut, true);
   unlisten?.();
   clearLeaveTimer();
   window.removeEventListener("keydown", onKeydown);
